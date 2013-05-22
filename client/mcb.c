@@ -166,7 +166,7 @@ static struct timeval stat_data_end;
 static int buff_size;
 static int data_size;
 
-#define DATA_SIZE  (sysval.data_len * 2 + 1)
+#define DATA_SIZE  (sysval.data_len + 1)
 #define BUFF_SIZE  (sysval.data_len * 2 + 100)
 
 /*
@@ -496,7 +496,7 @@ static void send_cmd(const int fd, const int id, char *data, char *buff)
     __CPROVER_assume(0 < sysval.data_len && sysval.data_len <= MAX_DATA_LEN);
     data_size = DATA_SIZE;
 #endif
-    str_len = 1 + (int) ((double) ((sysval.data_len * 2) * r));
+    str_len = sysval.data_len;
     assert(0 < str_len && str_len < data_size);
 
     /* check: data     */
