@@ -38,6 +38,7 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <netdb.h>
 #include <assert.h>
 
 #ifndef C_H
@@ -276,6 +277,59 @@ static int do_close(const int fd)
     return close(fd);
 }
 
+struct addrinfo *resolve_host(const char *host, int tcp_p)
+{
+  struct addrinfo hints = { 0 }, *result;
+  int s;
+
+  hints.ai_family   = AF_UNSPEC;
+  hints.ai_socktype = tcp_p ? SOCK_STREAM : SOCK_DGRAM;
+  hints.ai_flags    = 0;
+  hints.ai_protocol = 0;
+
+  s = getaddrinfo(host, "11211", &hints, &result);
+
+  if (s != 0) {
+    fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(s));
+    return NULL;
+  }
+
+  return result;
+}
+
+int connect_host(const char *hostaddr, int tcp_p)
+{
+  struct addrinfo *host, *rp;
+  int sfd;
+
+  host = resolve_host(hostaddr, tcp_p);
+
+  if (!host) {
+    return -1;
+  }
+
+  for (rp = host; rp != NULL; rp = rp->ai_next) {
+    sfd = socket(rp->ai_family, rp->ai_socktype,
+                 rp->ai_protocol);
+    if (sfd == -1)
+      continue;
+
+    if (connect(sfd, rp->ai_addr, rp->ai_addrlen) != -1)
+      break;                  /* Success */
+
+    close(sfd);
+  }
+
+  if (rp == NULL) {
+    fprintf(stderr, "no server found\n");
+    return -1;
+  }
+
+  freeaddrinfo(host);
+
+  return sfd;
+}
+
 static int do_connect(const char *addr, const int port)
 {
     int fd, sockopt = 1;
@@ -300,6 +354,9 @@ static int do_connect(const char *addr, const int port)
 	    do_close(fd);
 	    fd = -1;
 	}
+    } else if (addr[0] > '9' || addr[0] < '0') {
+	assert(sysval.type == TCP || sysval.type == UDP);
+	return connect_host(addr, sysval.type == TCP);
     } else {
 	/* TCP or UDP */
 	assert(sysval.type == TCP || sysval.type == UDP);
@@ -403,7 +460,6 @@ build_mc_cmd(char *buff, const int buff_size, const int cmd_type,
 static int do_cmd(const int fd, const char *cmd, const int cmd_len, const unsigned long int id)
 {
     int ret, len;
-    struct timeval tv;
     fd_set fds;
     char result[MAX_LINE];
 
@@ -418,8 +474,6 @@ static int do_cmd(const int fd, const char *cmd, const int cmd_len, const unsign
 
     FD_ZERO(&fds);
     FD_SET(fd, &fds);
-    tv.tv_sec = 0;
-    tv.tv_usec = 0;
 
     /* send command to memcached  */
     if (send(fd, cmd, cmd_len, 0) != cmd_len) {
