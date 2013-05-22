@@ -33,14 +33,12 @@ struct addrinfo *resolve_host(char *host)
   return result;
 }
 
-int main(int argc, char *argv[])
+int connect_memcached(char *hostaddr)
 {
   struct addrinfo *host, *rp;
-  int sfd, len;
-  char *recv_buf;
-  char send_buf[BUFSIZE] = "stats\r\n";
+  int sfd;
 
-  host = resolve_host(argc > 1 ? argv[1] : "localhost");
+  host = resolve_host(hostaddr);
 
   if (!host) {
     exit(EXIT_FAILURE);
@@ -64,6 +62,17 @@ int main(int argc, char *argv[])
   }
 
   freeaddrinfo(host);
+
+  return sfd;
+}
+
+int main(int argc, char *argv[])
+{
+  int sfd, len;
+  char *recv_buf;
+  char send_buf[BUFSIZE] = "stats\r\n";
+
+  sfd = connect_memcached(argc > 1 ? argv[1] : "localhost");
 
   if (write_safe(sfd, send_buf, strlen(send_buf)) == -1)
     exit(EXIT_FAILURE);
