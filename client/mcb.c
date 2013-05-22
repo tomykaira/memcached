@@ -277,17 +277,20 @@ static int do_close(const int fd)
     return close(fd);
 }
 
-struct addrinfo *resolve_host(const char *host, int tcp_p)
+struct addrinfo *resolve_host(const char *host, int port, int tcp_p)
 {
   struct addrinfo hints = { 0 }, *result;
+  char port_str[6];
   int s;
+
+  sprintf(port_str, "%d", port);
 
   hints.ai_family   = AF_UNSPEC;
   hints.ai_socktype = tcp_p ? SOCK_STREAM : SOCK_DGRAM;
   hints.ai_flags    = 0;
   hints.ai_protocol = 0;
 
-  s = getaddrinfo(host, "11211", &hints, &result);
+  s = getaddrinfo(host, port_str, &hints, &result);
 
   if (s != 0) {
     fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(s));
@@ -297,12 +300,12 @@ struct addrinfo *resolve_host(const char *host, int tcp_p)
   return result;
 }
 
-int connect_host(const char *hostaddr, int tcp_p)
+int connect_host(const char *hostaddr, int port, int tcp_p)
 {
   struct addrinfo *host, *rp;
   int sfd;
 
-  host = resolve_host(hostaddr, tcp_p);
+  host = resolve_host(hostaddr, port, tcp_p);
 
   if (!host) {
     return -1;
@@ -356,7 +359,7 @@ static int do_connect(const char *addr, const int port)
 	}
     } else if (addr[0] > '9' || addr[0] < '0') {
 	assert(sysval.type == TCP || sysval.type == UDP);
-	return connect_host(addr, sysval.type == TCP);
+	return connect_host(addr, port, sysval.type == TCP);
     } else {
 	/* TCP or UDP */
 	assert(sysval.type == TCP || sysval.type == UDP);
