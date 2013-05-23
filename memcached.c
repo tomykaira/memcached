@@ -14,6 +14,7 @@
  *      Brad Fitzpatrick <brad@danga.com>
  */
 #include "memcached.h"
+#include "ib.h"
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -82,6 +83,7 @@ static void process_stat_settings(ADD_STAT add_stats, void *c);
 /* defaults */
 static void settings_init(void);
 
+
 /* event handling, network IO */
 static void event_handler(const int fd, const short which, void *arg);
 static void conn_close(conn *c);
@@ -104,6 +106,8 @@ time_t process_started;     /* when the process was started */
 
 struct slab_rebalance slab_rebal;
 volatile int slab_rebalance_signal;
+
+resource_t res;
 
 /** file scope variables **/
 static conn *listen_conn = NULL;
@@ -3196,6 +3200,48 @@ static void process_verbosity_command(conn *c, token_t *tokens, const size_t nto
     return;
 }
 
+/* infiniband */
+int stringify_my_info(resource_t *res, int verbose, char *response);
+int connect_qp_with_received_info(resource_t *res, char **args, int verbose);
+int resource_create(resource_t *res, int ib_port, int verbose);
+int resource_destroy(resource_t *res);
+
+static void process_setup_ib_command(conn *c, token_t *tokens, const size_t ntokens) {
+    char response[128];
+    char *args[3];
+    int i;
+
+    if (resource_create(&res, IB_PORT, settings.verbose) != 0) {
+        out_string(c, "SERVER_ERROR failed to setup ib resource");
+        exit(EXIT_FAILURE);
+    }
+
+    for (i = 0; i < 3; i ++) {
+        args[i] = tokens[i + 1].value;
+    }
+
+    if (stringify_my_info(&res, settings.verbose, response) != 0) {
+        out_string(c, "SERVER_ERROR failed to collect my port info");
+        return;
+    }
+
+    if (connect_qp_with_received_info(&res, args, settings.verbose) != 0) {
+        out_string(c, "SERVER_ERROR failed to connect qp");
+        return;
+    }
+
+    out_string(c, response);
+}
+
+static void process_disconnect_ib_command(conn *c) {
+    if (resource_destroy(&res)) {
+        out_string(c, "SERVER_ERROR failed to destroy resource");
+        return;
+    }
+
+    out_string(c, "OK");
+}
+
 static void process_slabs_automove_command(conn *c, token_t *tokens, const size_t ntokens) {
     unsigned int level;
 
@@ -3383,6 +3429,12 @@ static void process_command(conn *c, char *command) {
         }
     } else if ((ntokens == 3 || ntokens == 4) && (strcmp(tokens[COMMAND_TOKEN].value, "verbosity") == 0)) {
         process_verbosity_command(c, tokens, ntokens);
+    } else if (ntokens == 5 && (strcmp(tokens[COMMAND_TOKEN].value, "setup_ib") == 0)) {
+
+        process_setup_ib_command(c, tokens, ntokens);
+
+    } else if (ntokens == 2 && (strcmp(tokens[COMMAND_TOKEN].value, "disconnect_ib") == 0)) {
+        process_disconnect_ib_command(c);
     } else {
         out_string(c, "ERROR");
     }
@@ -4625,6 +4677,7 @@ static void remove_pidfile(const char *pid_file) {
 
 static void sig_handler(const int sig) {
     printf("SIGINT handled.\n");
+    resource_destroy(&res);
     exit(EXIT_SUCCESS);
 }
 

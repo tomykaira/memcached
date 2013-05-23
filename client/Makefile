@@ -1,12 +1,12 @@
 .PHONY: all clean
-CFLAGS=-g -Wall -std=gnu99
+CFLAGS=-g -std=gnu99 -Wall -Werror -pedantic -Wmissing-prototypes -Wmissing-declarations -Wredundant-decls
+LDFLAGS=-libverbs
 
-all: client mcb
+all: client
 clean:
 	rm *.o client mcb
 
-client: client.o comm.o
-	gcc $(CFLGAS) -o $@ $^
+client: client.o comm.o ../ib.o
 
 mcb: mcb.o
 	gcc $(CFLGAS) -o $@ $^ -lpthread

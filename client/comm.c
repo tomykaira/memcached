@@ -6,11 +6,14 @@
 
 #include "client.h"
 
+int write_safe(int fd, char *data, int len);
+int read_safe(int fd, char **data);
+
 int write_safe(int fd, char *data, int len)
 {
   int wrote_len = 0;
   while (wrote_len < len) {
-    int ret = write(fd, (void*) data + wrote_len, len - wrote_len);
+    int ret = write(fd, data + wrote_len, len - wrote_len);
 
     if (ret == -1) {
       if (errno == EINTR || errno == EAGAIN)

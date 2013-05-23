@@ -9,11 +9,23 @@
 #include <netinet/in.h>
 
 #include "client.h"
+#include "../ib.h"
 
+#define VERBOSE 2
+
+/* comm.c */
 int write_safe(int fd, char *data, int len);
 int read_safe(int fd, char **data);
 
-struct addrinfo *resolve_host(char *host)
+/* ib.c */
+int stringify_my_info(resource_t *res, int verbose, char *response);
+int connect_qp_with_received_info(resource_t *res, char **args, int verbose);
+int resource_create(resource_t *res, int ib_port);
+int resource_destroy(resource_t *res);
+
+resource_t res;
+
+static struct addrinfo *resolve_host(const char *host, const char *port)
 {
   struct addrinfo hints = { 0 }, *result;
   int s;
@@ -23,7 +35,7 @@ struct addrinfo *resolve_host(char *host)
   hints.ai_flags    = 0;
   hints.ai_protocol = 0;
 
-  s = getaddrinfo(host, "11211", &hints, &result);
+  s = getaddrinfo(host, port, &hints, &result);
 
   if (s != 0) {
     fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(s));
@@ -33,12 +45,12 @@ struct addrinfo *resolve_host(char *host)
   return result;
 }
 
-int connect_memcached(char *hostaddr)
+static int connect_memcached(const char *hostaddr, const char *port)
 {
   struct addrinfo *host, *rp;
   int sfd;
 
-  host = resolve_host(hostaddr);
+  host = resolve_host(hostaddr, port);
 
   if (!host) {
     exit(EXIT_FAILURE);
@@ -66,23 +78,93 @@ int connect_memcached(char *hostaddr)
   return sfd;
 }
 
+static int send_command(int sfd, const char *command)
+{
+  char send[1024], *recv;
+  int len;
+
+  sprintf(send, "%s\r\n", command);
+  if (write_safe(sfd, send, strlen(send)) == -1) {
+    return -1;
+  }
+  if ((len = read_safe(sfd, &recv)) < 0) {
+    return -1;
+  }
+  write_safe(1, recv, len);
+  free(recv);
+  return 0;
+}
+
+static int connect_qp_client(resource_t *res, int sfd)
+{
+  char send[1024] = "setup_ib ";
+  char *recv;
+  char *args[3];
+  int len;
+
+  if (stringify_my_info(res, VERBOSE, send + strlen(send))) {
+    fprintf(stderr, "Failed to stringify my info\n");
+    return 1;
+  }
+  strcat(send, "\r\n");
+  if (VERBOSE) {
+    printf("Sending %s", send);
+  }
+  write_safe(sfd, send, strlen(send));
+  len = read_safe(sfd, &recv);
+
+  if (VERBOSE)
+    write_safe(1, recv, len);
+
+  args[0] = recv;
+  args[1] = strchr(recv, ' ') + 1;
+  *(args[1]-1) = '\0';
+  args[2] = strchr(args[1], ' ') + 1;
+  *(args[2]-1) = '\0';
+
+  if (connect_qp_with_received_info(res, args, VERBOSE)) {
+    fprintf(stderr, "Failed to connect qp\n");
+    return 1;
+  }
+
+  free(recv);
+  return 0;
+}
+
 int main(int argc, char *argv[])
 {
-  int sfd, len;
-  char *recv_buf;
-  char send_buf[BUFSIZE] = "stats\r\n";
+  int sfd = -1;
+  int rc = EXIT_SUCCESS;
 
-  sfd = connect_memcached(argc > 1 ? argv[1] : "localhost");
-
-  if (write_safe(sfd, send_buf, strlen(send_buf)) == -1)
-    exit(EXIT_FAILURE);
-  if ((len = read_safe(sfd, &recv_buf)) < 0) {
-    exit(EXIT_FAILURE);
+  sfd = connect_memcached(argc > 1 ? argv[1] : "localhost", argc > 2 ? argv[2] : "11211");
+  if (sfd < 0) {
+    rc = EXIT_FAILURE;
+    goto end;
   }
-  write_safe(1, recv_buf, len);
 
+  send_command(sfd, "stats");
+
+  /* start local ib */
+  if (resource_create(&res, IB_PORT) != 0) {
+    fprintf(stderr, "Failed to initialize res\n");
+    rc = EXIT_FAILURE;
+    goto end;
+  }
+
+  if (connect_qp_client(&res, sfd) != 0) {
+    fprintf(stderr, "Failed to connect qp\n");
+    rc = EXIT_FAILURE;
+    goto end;
+  }
+
+  /* send ib request */
+
+  /* let server to discard resource  */
+  send_command(sfd, "disconnect_ib");
+
+ end:
+  resource_destroy(&res);
   close(sfd);
-  free(recv_buf);
 
-  return 0;
+  return rc;
 }
