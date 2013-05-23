@@ -131,6 +131,31 @@ static int connect_qp_client(resource_t *res, int sfd)
   return 0;
 }
 
+static int request_rdma_set(resource_t *res, int sfd)
+{
+  struct ibv_mr *mr;
+  char content[1024] = "Hello RDMA world!";
+  char command[1024];
+
+  mr = ibv_reg_mr(res->pd, content, strlen(content), IBV_ACCESS_REMOTE_READ);
+
+  if (mr == 0) {
+    fprintf(stderr, "failed to register MR\n");
+    return 1;
+  }
+
+  if (VERBOSE) {
+    printf("key %x addr %lx len %d\n", mr->rkey, (uintptr_t)mr->addr, (uint)strlen(content));
+  }
+
+  sprintf(command, "mset test 0 0 %u %lu %u", (uint)strlen(content), (uintptr_t)mr->addr, mr->rkey);
+  send_command(sfd, command);
+
+  ibv_dereg_mr(mr);
+
+  return 0;
+}
+
 int main(int argc, char *argv[])
 {
   int sfd = -1;
@@ -141,8 +166,6 @@ int main(int argc, char *argv[])
     rc = EXIT_FAILURE;
     goto end;
   }
-
-  send_command(sfd, "stats");
 
   /* start local ib */
   if (resource_create(&res, IB_PORT) != 0) {
@@ -158,9 +181,13 @@ int main(int argc, char *argv[])
   }
 
   /* send ib request */
+  request_rdma_set(&res, sfd);
+  send_command(sfd, "get test");
 
   /* let server to discard resource  */
   send_command(sfd, "disconnect_ib");
+
+  send_command(sfd, "shutdown");
 
  end:
   resource_destroy(&res);

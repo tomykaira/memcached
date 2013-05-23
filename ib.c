@@ -14,15 +14,16 @@
 resource_t res;
 
 /** file scope variables **/
-const static char B64TABLE[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "0123456789+/=";
+static char *base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 int stringify_my_info(resource_t *res, int verbose, char *response);
 int connect_qp_with_received_info(resource_t *res, char **args, int verbose);
 int resource_create(resource_t *res, int ib_port, int verbose);
 int resource_destroy(resource_t *res);
+int rdma_read(resource_t *res, const struct rdma_pointer *ptr, char * local_ptr);
+
+#define SCQ_FLG 1
+#define RCQ_FLG 2
 
 int
 resource_create(resource_t *res, int ib_port, int verbose)
@@ -253,42 +254,60 @@ ib_write_int(uint32_t val, char *str) {
 }
 
 static void
-ib_read_bytes(char *str, int original_length, uint8_t *out) {
+ib_read_bytes(char *str, int length, uint8_t *out) {
     int i, j = 0;
-    uint8_t i0, i1, i2, i3;
-    for (i = 0; i < original_length; i += 4) {
-        i0 = *(str + i + 0) == '=' ? 0 : (uint8_t)(strchr(B64TABLE, *(str + i + 0)) - B64TABLE);
-        i1 = *(str + i + 1) == '=' ? 0 : (uint8_t)(strchr(B64TABLE, *(str + i + 1)) - B64TABLE);
-        i2 = *(str + i + 2) == '=' ? 0 : (uint8_t)(strchr(B64TABLE, *(str + i + 2)) - B64TABLE);
-        i3 = *(str + i + 3) == '=' ? 0 : (uint8_t)(strchr(B64TABLE, *(str + i + 3)) - B64TABLE);
-        *(out + j + 0) = ((i0 & 0x3f) << 2) | (((i1 & 0x30)) >> 4);
-        *(out + j + 1) = ((i1 & 0x0f) << 2) | (((i2 & 0x3c)) >> 4);
-        *(out + j + 2) = ((i2 & 0x03) << 2) | (((i3 & 0x3f)) >> 4);
-        j += 3;
+    uint32_t v = 0;
+
+    for (i = 0; str[i] != '=' && str[i] != '\0'; ++i) {
+        v = (v << 6) | ((strchr(base64, str[i]) - base64) & 0x3f);
+
+        if (i % 4 == 3) {
+            for (j = 2; j >= 0; j--) {
+                *out = (v >> (j*8)) & 0xff;
+                out++;
+            }
+            v = 0;
+        }
     }
 }
 
-static void
-ib_write_bytes(uint8_t *data, int original_length, char *out) {
-    int i, j = 0;
-    uint8_t i0, i1, i2, c0, c1, c2, c3;
+static int encode_char(unsigned long bb, int srclen, char *dest, int j)
+{
+    int x, i, base;
 
-    for (i = 0; i < original_length; i += 3) {
-        i0 = (i + 0 < original_length) ? *(data + i + 0) : '\0';
-        i1 = (i + 1 < original_length) ? *(data + i + 1) : '\0';
-        i2 = (i + 2 < original_length) ? *(data + i + 2) : '\0';
+    for ( i = srclen; i < 2; i++ )
+        bb <<= 8;
 
-        c0 = i0 >> 2;
-        c1 = (i0 & 0x03) << 4 | (i1 >> 4);
-        c2 = (i1 & 0x0f) << 2 | (i2 >> 6);
-        c3 = i2 & 0x3f;
+    for ( base = 18, x = 0; x < srclen + 2; x++, base -= 6)
+        dest[j++] = base64[ (bb>>base) & 0x3F ];
 
-        *(out + j + 0) = (i + 0 < original_length) ? B64TABLE[c0] : '=';
-        *(out + j + 1) = (i + 0 < original_length) ? B64TABLE[c1] : '=';
-        *(out + j + 2) = (i + 1 < original_length) ? B64TABLE[c2] : '=';
-        *(out + j + 3) = (i + 2 < original_length) ? B64TABLE[c3] : '=';
-        j += 4;
+    for ( i = x; i < 4; i++ )
+        dest[j++] = '=';
+
+    return j;
+}
+
+static void ib_write_bytes(const uint8_t *src, int length, char *dest)
+{
+    unsigned long bb = (unsigned long)0;
+    int     i = 0, j = 0;
+
+    for (int c = 0; c < length; ++c) {
+        bb <<= 8;
+        bb |= (unsigned long)src[c];
+
+        if (i == 2) {
+            encode_char(bb, i, dest, j);
+
+            j = j + 4;
+            i = 0;
+            bb = 0;
+        } else
+            i++;
     }
+
+    if (i)
+        encode_char(bb, i - 1, dest, j);
 }
 
 static int
@@ -313,22 +332,22 @@ static int modify_qp_to_init(struct ibv_qp *qp, int ib_port)
     attr.port_num = ib_port;
     attr.pkey_index = 0;
     attr.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ
-    		     | IBV_ACCESS_REMOTE_WRITE;
+        | IBV_ACCESS_REMOTE_WRITE;
     flags = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
     rc = ibv_modify_qp(qp, &attr, flags);
     if (rc) {
-	fprintf(stderr, "failed to modify QP state to INIT\n");
+        fprintf(stderr, "failed to modify QP state to INIT\n");
     }
     return rc;
 }
 
 static int
 modify_qp_to_rtr(struct ibv_qp *qp, uint32_t remote_qpn, uint16_t dlid,
-		 uint8_t *dgid, int ib_port, int gid_idx)
+                 uint8_t *dgid, int ib_port, int gid_idx)
 {
-    struct ibv_qp_attr	attr;
-    int		flags;
-    int		rc;
+    struct ibv_qp_attr attr;
+    int flags;
+    int rc;
 
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_RTR;
@@ -344,20 +363,20 @@ modify_qp_to_rtr(struct ibv_qp *qp, uint32_t remote_qpn, uint16_t dlid,
     attr.ah_attr.port_num = ib_port;
 
     if (gid_idx >= 0){
-	attr.ah_attr.is_global = 1;
-	attr.ah_attr.port_num = 1;
-	memcpy(&attr.ah_attr.grh.dgid, dgid, 16);
-	attr.ah_attr.grh.flow_label = 0;
-	attr.ah_attr.grh.hop_limit = 1;
-	attr.ah_attr.grh.sgid_index = gid_idx;
-	attr.ah_attr.grh.traffic_class = 0;
+        attr.ah_attr.is_global = 1;
+        attr.ah_attr.port_num = 1;
+        memcpy(&attr.ah_attr.grh.dgid, dgid, 16);
+        attr.ah_attr.grh.flow_label = 0;
+        attr.ah_attr.grh.hop_limit = 1;
+        attr.ah_attr.grh.sgid_index = gid_idx;
+        attr.ah_attr.grh.traffic_class = 0;
     }
 
     flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN
-	| IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
+        | IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
     rc = ibv_modify_qp(qp, &attr, flags);
     if (rc){
-	fprintf(stderr, "failed to modify QP state to RTR\n");
+        fprintf(stderr, "failed to modify QP state to RTR\n");
     }
     return rc;
 }
@@ -365,9 +384,9 @@ modify_qp_to_rtr(struct ibv_qp *qp, uint32_t remote_qpn, uint16_t dlid,
 static int
 modify_qp_to_rts(struct ibv_qp *qp)
 {
-    struct ibv_qp_attr	attr;
-    int		flags;
-    int		rc;
+    struct ibv_qp_attr attr;
+    int flags;
+    int rc;
 
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_RTS;
@@ -378,10 +397,10 @@ modify_qp_to_rts(struct ibv_qp *qp)
     attr.max_rd_atomic = 1;
 
     flags = IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT
-	| IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC;
+        | IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC;
     rc = ibv_modify_qp(qp, &attr, flags);
     if (rc){
-	fprintf(stderr, "failed to modify QP state to RTS\n");
+        fprintf(stderr, "failed to modify QP state to RTS\n");
     }
     return rc;
 }
@@ -400,16 +419,17 @@ int stringify_my_info(resource_t *res, int verbose, char *response) {
     }
 
     if (verbose > 1) {
-	    fprintf(stderr, "qp_num(%d) lid(%d)\n",
-	            res->qp->qp_num, res->port_attr.lid);
-	    uint8_t *p = (uint8_t*) &my_gid;
-	    printf("Local GID = %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
-	           p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
+        fprintf(stderr, "qp_num(%d) lid(%d)\n",
+                res->qp->qp_num, res->port_attr.lid);
+        uint8_t *p = (uint8_t*) &my_gid;
+        printf("Local GID = %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
+               p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
     }
 
     ib_write_int(res->qp->qp_num, response);
     ib_write_int(res->port_attr.lid, response + 9);
     ib_write_bytes((uint8_t *)&my_gid, 16, response + 18);
+    *(response + 18 + 24) = '\0';
 
     return 0;
 }
@@ -426,9 +446,9 @@ int connect_qp_with_received_info(resource_t *res, char **args, int verbose) {
 
     if (verbose > 1) {
         uint8_t *p;
-        printf("remote_qp_num(%d) remote_lid(%d)\n", remote_qp_num, remote_lid);
+        fprintf(stderr, "remote_qp_num(%d) remote_lid(%d)\n", remote_qp_num, remote_lid);
         p = remote_gid;
-        printf("Remote GID = %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
+        fprintf(stderr, "Remote GID = %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
                p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
     }
 
@@ -449,6 +469,83 @@ int connect_qp_with_received_info(resource_t *res, char **args, int verbose) {
         fprintf(stderr, "failed to modify QP state to RTR\n");
         return rc;
     }
+
+    return 0;
+}
+
+static int
+poll_cq(resource_t *res, struct ibv_wc *wc, int cq_flg)
+{
+    int   rc = 0;
+    struct ibv_cq *target = NULL;
+
+    /* poll the completion for a while before giving up of doing it .. */
+    if(cq_flg == SCQ_FLG && res->scq != NULL) {
+        target = res->scq;
+    } else if (cq_flg == RCQ_FLG && res->rcq != NULL){
+        target = res->rcq;
+    }
+
+    rc = ibv_poll_cq(res->scq, 1, wc); /* wc will overwritten */
+    if (rc < 0) return rc;
+
+    return rc;
+}
+
+
+int rdma_read(resource_t *res, const struct rdma_pointer *ptr, char * local_ptr) {
+    struct ibv_mr *mr = ibv_reg_mr(res->pd, local_ptr, ptr->len, IBV_ACCESS_LOCAL_WRITE);
+    struct ibv_sge sge;
+    struct ibv_send_wr wr, *bad_wr;
+    struct ibv_wc wc;
+    int rc = 0;
+    int counter = 0;
+
+    memset(&wr, 0, sizeof(wr));
+    memset(&wc, 0, sizeof(struct ibv_wc));
+
+    if (!mr) {
+        fprintf(stderr, "failed to register memory region\n");
+        return 1;
+    }
+
+    sge.addr = (intptr_t)local_ptr;
+    sge.length = ptr->len;
+    sge.lkey = mr->lkey;
+
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+    wr.opcode = IBV_WR_RDMA_READ;
+
+    wr.wr.rdma.remote_addr = ptr->addr;
+    wr.wr.rdma.rkey = ptr->key;
+
+    rc = ibv_post_send(res->qp, &wr, &bad_wr);
+    if (rc) {
+        fprintf(stderr, "failed to post wr rc(%d)\n", rc);
+        return rc;
+    }
+
+    while ((rc = poll_cq(res, &wc, SCQ_FLG)) == 0) {
+        counter++;
+        if (counter > 100000) {
+            fprintf(stderr, "takes too much\n");
+            break;
+        }
+    }
+
+    if (wc.status != 0) {
+        fprintf(stderr,
+                "status: %s, vendor syndrome: 0x%d, %d byte, op: 0x%d, id=%ld\n",
+                ibv_wc_status_str(wc.status), wc.vendor_err, wc.byte_len, wc.opcode, wc.wr_id);
+    }
+
+    if (rc < 0) {
+        fprintf(stderr, "poll_cq failed rc(%d)\n", rc);
+        return rc;
+    }
+
+    ibv_dereg_mr(mr);
 
     return 0;
 }

@@ -35,6 +35,12 @@ typedef struct resources {
     int    gid_idx;
 } resource_t;
 
+struct rdma_pointer {
+	uint64_t addr;
+	uint32_t key;
+	size_t len;
+};
+
 extern resource_t res;
 
 #endif /* _IB_H_ */

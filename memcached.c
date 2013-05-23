@@ -900,6 +900,72 @@ static void complete_nread_ascii(conn *c) {
     c->item = 0;
 }
 
+/*
+ * we get here after reading the value in set/add/replace commands. The command
+ * has been stored in c->cmd, and the item is ready in c->item.
+ */
+static void complete_nread_drma(conn *c, item *it, int comm) {
+    assert(c != NULL);
+    assert(it != NULL);
+
+    enum store_item_type ret;
+
+    pthread_mutex_lock(&c->thread->stats.mutex);
+    c->thread->stats.slab_stats[it->slabs_clsid].set_cmds++;
+    pthread_mutex_unlock(&c->thread->stats.mutex);
+
+    ret = store_item(it, comm, c);
+
+#ifdef ENABLE_DTRACE
+    uint64_t cas = ITEM_get_cas(it);
+    switch (c->cmd) {
+    case NREAD_ADD:
+        MEMCACHED_COMMAND_ADD(c->sfd, ITEM_key(it), it->nkey,
+                              (ret == 1) ? it->nbytes : -1, cas);
+        break;
+    case NREAD_REPLACE:
+        MEMCACHED_COMMAND_REPLACE(c->sfd, ITEM_key(it), it->nkey,
+                                  (ret == 1) ? it->nbytes : -1, cas);
+        break;
+    case NREAD_APPEND:
+        MEMCACHED_COMMAND_APPEND(c->sfd, ITEM_key(it), it->nkey,
+                                 (ret == 1) ? it->nbytes : -1, cas);
+        break;
+    case NREAD_PREPEND:
+        MEMCACHED_COMMAND_PREPEND(c->sfd, ITEM_key(it), it->nkey,
+                                  (ret == 1) ? it->nbytes : -1, cas);
+        break;
+    case NREAD_SET:
+        MEMCACHED_COMMAND_SET(c->sfd, ITEM_key(it), it->nkey,
+                              (ret == 1) ? it->nbytes : -1, cas);
+        break;
+    case NREAD_CAS:
+        MEMCACHED_COMMAND_CAS(c->sfd, ITEM_key(it), it->nkey, it->nbytes,
+                              cas);
+        break;
+    }
+#endif
+
+    switch (ret) {
+    case STORED:
+        out_string(c, "STORED");
+        break;
+    case EXISTS:
+        out_string(c, "EXISTS");
+        break;
+    case NOT_FOUND:
+        out_string(c, "NOT_FOUND");
+        break;
+    case NOT_STORED:
+        out_string(c, "NOT_STORED");
+        break;
+    default:
+        out_string(c, "SERVER_ERROR Unhandled storage type.");
+    }
+
+    item_remove(it);       /* release the c->item reference */
+}
+
 /**
  * get a pointer to the start of the request struct for the current command
  */
@@ -2951,6 +3017,103 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     conn_set_state(c, conn_nread);
 }
 
+int rdma_read(resource_t *res, const struct rdma_pointer *ptr, char * local_ptr);
+
+static void process_rdma_update_command(conn *c, token_t *tokens, const size_t ntokens, int comm, bool handle_cas) {
+    char *key;
+    size_t nkey;
+    unsigned int flags;
+    int32_t exptime_int = 0;
+    time_t exptime;
+    int vlen;
+    uint64_t req_cas_id=0;
+    item *it;
+    struct rdma_pointer ptr;
+
+    assert(c != NULL);
+
+    set_noreply_maybe(c, tokens, ntokens);
+
+    if (tokens[KEY_TOKEN].length > KEY_MAX_LENGTH) {
+        out_string(c, "CLIENT_ERROR bad command line format");
+        return;
+    }
+
+    key = tokens[KEY_TOKEN].value;
+    nkey = tokens[KEY_TOKEN].length;
+
+    if (! (safe_strtoul(tokens[2].value, (uint32_t *)&flags)
+           && safe_strtol(tokens[3].value, &exptime_int)
+           && safe_strtol(tokens[4].value, (int32_t *)&vlen)
+           && safe_strtoull(tokens[5].value, &(ptr.addr))
+           && safe_strtoul(tokens[6].value, &(ptr.key)))) {
+        out_string(c, "CLIENT_ERROR bad command line format");
+        return;
+    }
+
+    ptr.len = vlen;
+
+    /* Ubuntu 8.04 breaks when I pass exptime to safe_strtol */
+    exptime = exptime_int;
+
+    /* Negative exptimes can underflow and end up immortal. realtime() will
+       immediately expire values that are greater than REALTIME_MAXDELTA, but less
+       than process_started, so lets aim for that. */
+    if (exptime < 0)
+        exptime = REALTIME_MAXDELTA + 1;
+
+    // does cas value exist?
+    if (handle_cas) {
+        if (!safe_strtoull(tokens[5].value, &req_cas_id)) {
+            out_string(c, "CLIENT_ERROR bad command line format");
+            return;
+        }
+    }
+
+    if (vlen < 0) {
+        out_string(c, "CLIENT_ERROR bad command line format");
+        return;
+    }
+
+    if (settings.detail_enabled) {
+        stats_prefix_record_set(key, nkey);
+    }
+
+    it = item_alloc(key, nkey, flags, realtime(exptime), vlen);
+
+    if (it == 0) {
+        if (! item_size_ok(nkey, flags, vlen))
+            out_string(c, "SERVER_ERROR object too large for cache");
+        else
+            out_string(c, "SERVER_ERROR out of memory storing object");
+        /* swallow the data line */
+        c->write_and_go = conn_swallow;
+        c->sbytes = vlen;
+
+        /* Avoid stale data persisting in cache because we failed alloc.
+         * Unacceptable for SET. Anywhere else too? */
+        if (comm == NREAD_SET) {
+            it = item_get(key, nkey);
+            if (it) {
+                item_unlink(it);
+                item_remove(it);
+            }
+        }
+
+        return;
+    }
+    ITEM_set_cas(it, req_cas_id);
+
+    if (settings.verbose)
+        fprintf(stderr, "<%d key %x, addr %lx, len %d\n", c->sfd, ptr.key, ptr.addr, (int)ptr.len);
+
+    if (rdma_read(&res, &ptr, ITEM_data(it))) {
+        out_string(c, "SERVER_ERROR failed to copy memory from client");
+        return;
+    }
+    complete_nread_drma(c, it, comm);
+}
+
 static void process_touch_command(conn *c, token_t *tokens, const size_t ntokens) {
     char *key;
     size_t nkey;
@@ -3430,11 +3593,16 @@ static void process_command(conn *c, char *command) {
     } else if ((ntokens == 3 || ntokens == 4) && (strcmp(tokens[COMMAND_TOKEN].value, "verbosity") == 0)) {
         process_verbosity_command(c, tokens, ntokens);
     } else if (ntokens == 5 && (strcmp(tokens[COMMAND_TOKEN].value, "setup_ib") == 0)) {
-
         process_setup_ib_command(c, tokens, ntokens);
 
     } else if (ntokens == 2 && (strcmp(tokens[COMMAND_TOKEN].value, "disconnect_ib") == 0)) {
         process_disconnect_ib_command(c);
+
+    } else if (ntokens == 8 && strcmp(tokens[COMMAND_TOKEN].value, "mset") == 0 && (comm = NREAD_SET)) {
+
+        /* mset <key> <flags> <exptime> <bytes> <addr(uint64)> <key(uint32)>\r\n */
+        process_rdma_update_command(c, tokens, ntokens, comm, false);
+
     } else {
         out_string(c, "ERROR");
     }
