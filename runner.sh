@@ -19,7 +19,7 @@ for host in `cat ${PBS_NODEFILE}`; do
   if [ $host = $me ]; then
     if [ $started = n ]; then
       echo "It's me"
-      ./memcached -vv -A -p $port -U 0 > server.$PBS_JOBID 2>&1 &
+      ./memcached -A -p $port -U 0 > server.$PBS_JOBID 2>&1 &
       started=y
     fi
   else

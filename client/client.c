@@ -7,11 +7,16 @@
 #include <unistd.h>
 #include <string.h>
 #include <netinet/in.h>
+#include <sys/time.h>
 
 #include "client.h"
 #include "../ib.h"
 
-#define VERBOSE 2
+#define VERBOSE 0
+
+#define TEST_MODE 0
+#define BENCH_MODE 1
+#define MODE BENCH_MODE
 
 /* comm.c */
 int write_safe(int fd, char *data, int len);
@@ -156,6 +161,100 @@ static int request_rdma_set(resource_t *res, int sfd)
   return 0;
 }
 
+static double get_interval(struct timeval bt, struct timeval et)
+{
+    double b, e;
+
+    b = bt.tv_sec + (double) bt.tv_usec * 1e-6;
+    e = et.tv_sec + (double) et.tv_usec * 1e-6;
+    return e - b;
+}
+
+static int bench_set(resource_t *res, int sfd, int size, int times)
+{
+  int i;
+  char *data = calloc(size, sizeof(char));
+  char *recv;
+  struct timeval begin, end;
+  double elapsed;
+  char *command = calloc(size + 1024, sizeof(char));
+  int header_length;
+
+  sprintf(data, "abcabcabc");
+  data[size - 1] = data[size - 2] = data[size - 3] = 'A';
+
+  gettimeofday(&begin, NULL);
+  for (i = 1; i <= times; ++i) {
+    sprintf(command, "set %d 0 0 %u\r\n", i, (uint)size);
+    header_length = strlen(command);
+    memcpy(command + header_length, data, size);
+    sprintf(command + header_length + size, "\r\n");
+    if (write_safe(sfd, command, header_length + size + 2) == -1) {
+      return -1;
+    }
+    if (read_safe(sfd, &recv) < 0) {
+      return -1;
+    }
+    free(recv);
+  }
+  gettimeofday(&end, NULL);
+  elapsed = get_interval(begin, end);
+  printf("ORIGINAL =>\n");
+  printf("\tsize\t%d\n", size);
+  printf("\ttimes\t%d\n", times);
+  printf("\tinterval\t%lf [sec]\n", elapsed);
+  printf("\tperformance\t%lf [req/sec]\n\n", (double)times/elapsed);
+
+  free(data);
+  free(command);
+  return 0;
+}
+
+static int bench_rdma_set(resource_t *res, int sfd, int size, int times)
+{
+  int i;
+  struct ibv_mr *mr;
+  char *data = calloc(size, sizeof(char));
+  char *recv;
+  struct timeval begin, end;
+  double elapsed;
+  char command[1024];
+
+  sprintf(data, "abcabcabc");
+  data[size - 1] = data[size - 2] = data[size - 3] = 'A';
+
+  gettimeofday(&begin, NULL);
+  for (i = 1; i <= times; ++i) {
+    mr = ibv_reg_mr(res->pd, data, size, IBV_ACCESS_REMOTE_READ);
+
+    if (mr == 0) {
+      fprintf(stderr, "failed to register MR\n");
+      return 1;
+    }
+
+    sprintf(command, "mset %d 0 0 %u %lu %u\r\n", i, (uint)size, (uintptr_t)mr->addr, mr->rkey);
+    if (write_safe(sfd, command, strlen(command)) == -1) {
+      return -1;
+    }
+    if (read_safe(sfd, &recv) < 0) {
+      return -1;
+    }
+    free(recv);
+
+    ibv_dereg_mr(mr);
+  }
+  gettimeofday(&end, NULL);
+  elapsed = get_interval(begin, end);
+  printf("RDMA =>\n");
+  printf("\tsize\t%d\n", size);
+  printf("\ttimes\t%d\n", times);
+  printf("\tinterval\t%lf [sec]\n", elapsed);
+  printf("\tperformance\t%lf [req/sec]\n\n", (double)times/elapsed);
+
+  free(data);
+  return 0;
+}
+
 int main(int argc, char *argv[])
 {
   int sfd = -1;
@@ -181,8 +280,13 @@ int main(int argc, char *argv[])
   }
 
   /* send ib request */
-  request_rdma_set(&res, sfd);
-  send_command(sfd, "get test");
+  if (MODE == TEST_MODE) {
+    request_rdma_set(&res, sfd);
+    send_command(sfd, "get test");
+  } else {
+    bench_set(&res, sfd, 16000, 10000);
+    bench_rdma_set(&res, sfd, 16000, 10000);
+  }
 
   /* let server to discard resource  */
   send_command(sfd, "disconnect_ib");
