@@ -3017,7 +3017,7 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     conn_set_state(c, conn_nread);
 }
 
-int rdma_read(resource_t *res, const struct rdma_pointer *ptr, char * local_ptr);
+int rdma_read(resource_t *res, const size_t vlen);
 
 static void process_rdma_update_command(conn *c, token_t *tokens, const size_t ntokens, int comm, bool handle_cas) {
     char *key;
@@ -3028,7 +3028,6 @@ static void process_rdma_update_command(conn *c, token_t *tokens, const size_t n
     int vlen;
     uint64_t req_cas_id=0;
     item *it;
-    struct rdma_pointer ptr;
 
     assert(c != NULL);
 
@@ -3039,19 +3038,29 @@ static void process_rdma_update_command(conn *c, token_t *tokens, const size_t n
         return;
     }
 
+    /* RDMA related validations */
+    if (!res.remote_ptr) {
+        out_string(c, "ERROR rdma pointer is not initialized");
+        return;
+    }
+    if (!res.local_mr) {
+        out_string(c, "SERVER_ERROR server's local_mr is not initialized");
+        return;
+    }
+    if (vlen > res.local_mr->length) {
+        out_string(c, "CLIENT_ERROR object too large for RDMA");
+        return;
+    }
+
     key = tokens[KEY_TOKEN].value;
     nkey = tokens[KEY_TOKEN].length;
 
     if (! (safe_strtoul(tokens[2].value, (uint32_t *)&flags)
            && safe_strtol(tokens[3].value, &exptime_int)
-           && safe_strtol(tokens[4].value, (int32_t *)&vlen)
-           && safe_strtoull(tokens[5].value, &(ptr.addr))
-           && safe_strtoul(tokens[6].value, &(ptr.key)))) {
+           && safe_strtol(tokens[4].value, (int32_t *)&vlen))) {
         out_string(c, "CLIENT_ERROR bad command line format");
         return;
     }
-
-    ptr.len = vlen;
 
     /* Ubuntu 8.04 breaks when I pass exptime to safe_strtol */
     exptime = exptime_int;
@@ -3105,12 +3114,14 @@ static void process_rdma_update_command(conn *c, token_t *tokens, const size_t n
     ITEM_set_cas(it, req_cas_id);
 
     if (settings.verbose)
-        fprintf(stderr, "<%d key %x, addr %lx, len %d\n", c->sfd, ptr.key, ptr.addr, (int)ptr.len);
+        fprintf(stderr, "<%d key %u, addr %lu, len %d\n", c->sfd, res.remote_ptr->key, res.remote_ptr->addr, (int)vlen);
 
-    if (rdma_read(&res, &ptr, ITEM_data(it))) {
+    if (rdma_read(&res, vlen)) {
         out_string(c, "SERVER_ERROR failed to copy memory from client");
         return;
     }
+    /* TODO: merge these copies */
+    memcpy(ITEM_data(it), res.local_mr->addr, vlen);
     complete_nread_drma(c, it, comm);
 }
 
@@ -3368,11 +3379,22 @@ int stringify_my_info(resource_t *res, int verbose, char *response);
 int connect_qp_with_received_info(resource_t *res, char **args, int verbose);
 int resource_create(resource_t *res, int ib_port, int verbose);
 int resource_destroy(resource_t *res);
+int prepare_mr_host(resource_t *res, uint64_t addr, uint32_t key, size_t len, int verbose);
 
 static void process_setup_ib_command(conn *c, token_t *tokens, const size_t ntokens) {
     char response[128];
     char *args[3];
     int i;
+    uint64_t addr;
+    uint32_t key;
+    uint32_t len;
+
+    if (!(safe_strtoull(tokens[4].value, &addr)
+          && safe_strtoul(tokens[5].value, &key)
+          && safe_strtoul(tokens[6].value, &len))) {
+        out_string(c, "CLIENT_ERROR invalid argument");
+        return;
+    }
 
     if (resource_create(&res, IB_PORT, settings.verbose) != 0) {
         out_string(c, "SERVER_ERROR failed to setup ib resource");
@@ -3390,6 +3412,11 @@ static void process_setup_ib_command(conn *c, token_t *tokens, const size_t ntok
 
     if (connect_qp_with_received_info(&res, args, settings.verbose) != 0) {
         out_string(c, "SERVER_ERROR failed to connect qp");
+        return;
+    }
+
+    if (prepare_mr_host(&res, addr, key, (size_t)len, settings.verbose) != 0) {
+        out_string(c, "SERVER_ERROR failed to prepare mr");
         return;
     }
 
@@ -3592,15 +3619,15 @@ static void process_command(conn *c, char *command) {
         }
     } else if ((ntokens == 3 || ntokens == 4) && (strcmp(tokens[COMMAND_TOKEN].value, "verbosity") == 0)) {
         process_verbosity_command(c, tokens, ntokens);
-    } else if (ntokens == 5 && (strcmp(tokens[COMMAND_TOKEN].value, "setup_ib") == 0)) {
+    } else if (ntokens == 8 && (strcmp(tokens[COMMAND_TOKEN].value, "setup_ib") == 0)) {
         process_setup_ib_command(c, tokens, ntokens);
 
     } else if (ntokens == 2 && (strcmp(tokens[COMMAND_TOKEN].value, "disconnect_ib") == 0)) {
         process_disconnect_ib_command(c);
 
-    } else if (ntokens == 8 && strcmp(tokens[COMMAND_TOKEN].value, "mset") == 0 && (comm = NREAD_SET)) {
+    } else if (ntokens == 6 && strcmp(tokens[COMMAND_TOKEN].value, "mset") == 0 && (comm = NREAD_SET)) {
 
-        /* mset <key> <flags> <exptime> <bytes> <addr(uint64)> <key(uint32)>\r\n */
+        /* mset <key> <flags> <exptime> <bytes>\r\n */
         process_rdma_update_command(c, tokens, ntokens, comm, false);
 
     } else {

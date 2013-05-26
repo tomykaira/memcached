@@ -12,11 +12,12 @@
 #include "client.h"
 #include "../ib.h"
 
-#define VERBOSE 0
+#define VERBOSE 2
 
 #define TEST_MODE 0
 #define BENCH_MODE 1
 #define MODE BENCH_MODE
+#define MAX_LENGTH 16000
 
 /* comm.c */
 int write_safe(int fd, char *data, int len);
@@ -27,6 +28,7 @@ int stringify_my_info(resource_t *res, int verbose, char *response);
 int connect_qp_with_received_info(resource_t *res, char **args, int verbose);
 int resource_create(resource_t *res, int ib_port);
 int resource_destroy(resource_t *res);
+int prepare_mr_client(resource_t *res, int length, char *response);
 
 resource_t res;
 
@@ -111,6 +113,10 @@ static int connect_qp_client(resource_t *res, int sfd)
     fprintf(stderr, "Failed to stringify my info\n");
     return 1;
   }
+  if (prepare_mr_client(res, MAX_LENGTH, send)) {
+    fprintf(stderr, "Failed to prepare mr\n");
+    return 1;
+  }
   strcat(send, "\r\n");
   if (VERBOSE) {
     printf("Sending %s", send);
@@ -138,25 +144,13 @@ static int connect_qp_client(resource_t *res, int sfd)
 
 static int request_rdma_set(resource_t *res, int sfd)
 {
-  struct ibv_mr *mr;
   char content[1024] = "Hello RDMA world!";
   char command[1024];
 
-  mr = ibv_reg_mr(res->pd, content, strlen(content), IBV_ACCESS_REMOTE_READ);
+  memcpy(res->local_data, content, strlen(content) + 1);
 
-  if (mr == 0) {
-    fprintf(stderr, "failed to register MR\n");
-    return 1;
-  }
-
-  if (VERBOSE) {
-    printf("key %x addr %lx len %d\n", mr->rkey, (uintptr_t)mr->addr, (uint)strlen(content));
-  }
-
-  sprintf(command, "mset test 0 0 %u %lu %u", (uint)strlen(content), (uintptr_t)mr->addr, mr->rkey);
+  sprintf(command, "mset test 0 0 %u", (uint)strlen(content));
   send_command(sfd, command);
-
-  ibv_dereg_mr(mr);
 
   return 0;
 }
@@ -213,7 +207,6 @@ static int bench_set(resource_t *res, int sfd, int size, int times)
 static int bench_rdma_set(resource_t *res, int sfd, int size, int times)
 {
   int i;
-  struct ibv_mr *mr;
   char *data = calloc(size, sizeof(char));
   char *recv;
   struct timeval begin, end;
@@ -225,14 +218,8 @@ static int bench_rdma_set(resource_t *res, int sfd, int size, int times)
 
   gettimeofday(&begin, NULL);
   for (i = 1; i <= times; ++i) {
-    mr = ibv_reg_mr(res->pd, data, size, IBV_ACCESS_REMOTE_READ);
-
-    if (mr == 0) {
-      fprintf(stderr, "failed to register MR\n");
-      return 1;
-    }
-
-    sprintf(command, "mset %d 0 0 %u %lu %u\r\n", i, (uint)size, (uintptr_t)mr->addr, mr->rkey);
+    memcpy(res->local_data, data, size);
+    sprintf(command, "mset %d 0 0 %u\r\n", i, (uint)size);
     if (write_safe(sfd, command, strlen(command)) == -1) {
       return -1;
     }
@@ -240,8 +227,6 @@ static int bench_rdma_set(resource_t *res, int sfd, int size, int times)
       return -1;
     }
     free(recv);
-
-    ibv_dereg_mr(mr);
   }
   gettimeofday(&end, NULL);
   elapsed = get_interval(begin, end);
@@ -284,8 +269,10 @@ int main(int argc, char *argv[])
     request_rdma_set(&res, sfd);
     send_command(sfd, "get test");
   } else {
-    bench_set(&res, sfd, 16000, 10000);
-    bench_rdma_set(&res, sfd, 16000, 10000);
+    for (int size = 1000; size <= 16000; size += 1000) {
+      bench_set(&res, sfd, size, 10000);
+      bench_rdma_set(&res, sfd, size, 10000);
+    }
   }
 
   /* let server to discard resource  */

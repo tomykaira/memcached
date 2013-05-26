@@ -20,6 +20,12 @@ struct qp_con_data_t{
     uint8_t gid[16];
 };
 
+struct rdma_pointer {
+	uint64_t addr;
+	uint32_t key;
+	size_t len;
+};
+
 typedef struct resources {
     int ready;
     struct ibv_port_attr port_attr; /* IB port attributes */
@@ -29,17 +35,12 @@ typedef struct resources {
     struct ibv_cq       *scq;
     struct ibv_cq       *rcq;
     struct ibv_qp       *qp;
-    struct ibv_mr      **mr_list;
-    int    mr_size;
+    struct ibv_mr       *local_mr;
+    char                *local_data;
+    struct rdma_pointer *remote_ptr;
     struct ibv_comp_channel *comp_ch;
     int    gid_idx;
 } resource_t;
-
-struct rdma_pointer {
-	uint64_t addr;
-	uint32_t key;
-	size_t len;
-};
 
 extern resource_t res;
 
