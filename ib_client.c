@@ -82,8 +82,11 @@ rdma_request(resource_t *res)
 
 void client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data)
 {
+    res->in_buf[0] = 0xff;
     encode_binary_set(key, key_len, data_len, data, res->out_buf);
     rdma_request(res);
+    POLL_UNTIL(res->in_buf[0] != 0xff);
+    res->in_buf[0] = 0xff;
 }
 
 /*

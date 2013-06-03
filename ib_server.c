@@ -125,6 +125,8 @@ void *rdma_process_loop(void *arg)
         case OP_SET:
             fprintf(stderr, "SET\n");
             do_op_set(res->in_buf);
+            res->out_buf[0] = 0;
+            rdma_response(res);
             break;
         case OP_GET:
             fprintf(stderr, "GET\n");
