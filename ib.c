@@ -11,21 +11,65 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-resource_t res;
-
 /** file scope variables **/
 static char *base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 int stringify_my_info(resource_t *res, int verbose, char *response);
-int connect_qp_with_received_info(resource_t *res, char **args, int verbose);
+int connect_qp_with_received_info(resource_t *res, struct remote_info *rinfo, int verbose);
 int resource_create(resource_t *res, int ib_port, int verbose);
 int resource_destroy(resource_t *res);
-int rdma_read(resource_t *res, const size_t vlen);
-int prepare_mr_host(resource_t *res, uint64_t addr, uint32_t key, size_t len, int verbose);
-int prepare_mr_client(resource_t *res, int length, char *response);
+void ib_read_bytes(char *str, int length, uint8_t *out);
+int clear_cq(resource_t *res, int cq_flag);
 
-#define SCQ_FLG 1
-#define RCQ_FLG 2
+static void
+buffer_create(resource_t *res)
+{
+    TEST_NZ(res->in_buf  = calloc(BUF_SIZE, sizeof(char)));
+    TEST_NZ(res->out_buf = calloc(BUF_SIZE, sizeof(char)));
+
+    TEST_NZ(res->in_mr  = ibv_reg_mr(res->pd, res->in_buf,  BUF_SIZE, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE));
+    TEST_NZ(res->out_mr = ibv_reg_mr(res->pd, res->out_buf, BUF_SIZE, 0));
+
+    TEST_NZ(res->send_wr  = calloc(1, sizeof(*res->send_wr)));
+    TEST_NZ(res->send_sge = calloc(1, sizeof(*res->send_sge)));
+
+    res->send_sge->addr   = (intptr_t)res->out_mr->addr;
+    res->send_sge->length = res->out_mr->length;
+    res->send_sge->lkey   = res->out_mr->lkey;
+
+    res->send_wr->sg_list = res->send_sge;
+    res->send_wr->num_sge = 1;
+    res->send_wr->opcode  = IBV_WR_RDMA_WRITE;
+}
+
+static void
+buffer_destroy(resource_t *res)
+{
+    if (res->send_wr) {
+        free(res->send_wr);
+        res->send_wr = NULL;
+    }
+    if (res->send_sge) {
+        free(res->send_sge);
+        res->send_sge = NULL;
+    }
+    if (res->in_mr) {
+        ibv_dereg_mr(res->in_mr);
+        res->in_mr = NULL;
+    }
+    if (res->out_mr) {
+        ibv_dereg_mr(res->out_mr);
+        res->out_mr = NULL;
+    }
+    if (res->in_buf) {
+        free(res->in_buf);
+        res->in_buf = NULL;
+    }
+    if (res->out_buf) {
+        free(res->out_buf);
+        res->out_buf = NULL;
+    }
+}
 
 int
 resource_create(resource_t *res, int ib_port, int verbose)
@@ -38,9 +82,6 @@ resource_create(resource_t *res, int ib_port, int verbose)
     int  cq_size = MAX_CQ_CAPACITY;
     int  dev_numm;
     int  rc = 0;
-
-    if (res->ready)
-        return 0;
 
     /* Init structure */
     memset(res, 0, sizeof(resource_t));
@@ -117,9 +158,7 @@ resource_create(resource_t *res, int ib_port, int verbose)
         rc = 1;
         goto err_exit;
     }
-
-    res->local_mr = NULL;
-    res->remote_ptr = NULL;
+    res->scq_count = 0;
 
     /* Create QP */
     // inputs:
@@ -150,7 +189,8 @@ resource_create(resource_t *res, int ib_port, int verbose)
     if (verbose > 1)
         fprintf(stderr, "QP was created, QP number=0x%x\n", res->qp->qp_num);
 
-    res->ready = 1;
+    buffer_create(res);
+
     /* EXIT */
  err_exit:
     if(rc){
@@ -159,18 +199,6 @@ resource_create(resource_t *res, int ib_port, int verbose)
             ibv_destroy_qp(res->qp);
             res->qp = NULL;
         }
-        if(res->local_mr){
-            ibv_dereg_mr(res->local_mr);
-            res->local_mr = NULL;
-        }
-        if(res->local_data){
-            free(res->local_data);
-            res->local_data = NULL;
-        }
-        if (res->remote_ptr) {
-            free(res->remote_ptr);
-            res->remote_ptr = NULL;
-        }
         if(res->scq){
             ibv_destroy_cq(res->scq);
             res->scq = NULL;
@@ -178,10 +206,6 @@ resource_create(resource_t *res, int ib_port, int verbose)
         if(res->rcq){
             ibv_destroy_cq(res->rcq);
             res->rcq = NULL;
-        }
-        if(res->comp_ch){
-            ibv_destroy_comp_channel(res->comp_ch);
-            res->comp_ch = NULL;
         }
         if(res->pd){
             ibv_dealloc_pd(res->pd);
@@ -204,28 +228,19 @@ resource_destroy(resource_t *res)
 {
     int rc = 0;
 
-    if (!res->ready)
-        return 0;
+    if (!res) return 0;
 
-    res->ready = 0;
+    buffer_destroy(res);
 
+    /* Clear queue */
+    if (res->scq_count > 0) {
+        clear_cq(res, SCQ_FLG);
+        res->scq_count = 0;
+    }
     // Delete QP
     if (res->qp && ibv_destroy_qp(res->qp)){
         fprintf(stderr, "failed to destroy QP\n");
         rc = 1;
-    }
-    if (res->remote_ptr){
-        free(res->remote_ptr);
-        res->remote_ptr = NULL;
-    }
-    // Deregister MR
-    if(res->local_mr){
-        ibv_dereg_mr(res->local_mr);
-        res->local_mr = NULL;
-    }
-    if (res->local_data) {
-        free(res->local_data);
-        res->local_data = NULL;
     }
     // Delete CQ
     if (res->scq && ibv_destroy_cq(res->scq)){
@@ -234,10 +249,6 @@ resource_destroy(resource_t *res)
     }
     if (res->rcq && ibv_destroy_cq(res->rcq)){
         fprintf(stderr, "failed to destroy RCQ\n");
-        rc = 1;
-    }
-    if(res->comp_ch && ibv_destroy_comp_channel(res->comp_ch)){
-        fprintf(stderr, "failed to destroy Complete CH\n");
         rc = 1;
     }
     // Deallocate PD
@@ -252,19 +263,7 @@ resource_destroy(resource_t *res)
     return rc;
 }
 
-static unsigned int
-ib_read_int(char *str) {
-    unsigned int val;
-    sscanf(str, "%x", &val);
-    return val;
-}
-
-static void
-ib_write_int(uint32_t val, char *str) {
-    sprintf(str, "%08x ", val);
-}
-
-static void
+void
 ib_read_bytes(char *str, int length, uint8_t *out) {
     int i, j = 0;
     uint32_t v = 0;
@@ -318,7 +317,9 @@ static void ib_write_bytes(const uint8_t *src, int length, char *dest)
     }
 
     if (i)
-        encode_char(bb, i - 1, dest, j);
+        j = encode_char(bb, i - 1, dest, j);
+
+    dest[j] = '\0';
 }
 
 static int
@@ -420,6 +421,7 @@ int stringify_my_info(resource_t *res, int verbose, char *response) {
     int rc = 0;
     union ibv_gid my_gid;
     int gid_idx = gid_by_hostname();
+    char b64_gid[30];
 
     res->gid_idx = gid_idx;
 
@@ -437,28 +439,26 @@ int stringify_my_info(resource_t *res, int verbose, char *response) {
                p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
     }
 
-    ib_write_int(res->qp->qp_num, response);
-    ib_write_int(res->port_attr.lid, response + 9);
-    ib_write_bytes((uint8_t *)&my_gid, 16, response + 18);
-    *(response + 18 + 24) = '\0';
+    ib_write_bytes((uint8_t *)&my_gid, 16, b64_gid);;
 
+    sprintf(response, "%u %u %s %lu %u",
+            res->qp->qp_num,
+            res->port_attr.lid,
+            b64_gid,
+            (uintptr_t)res->in_mr->addr,
+            res->in_mr->rkey);
     return 0;
 }
 
-int connect_qp_with_received_info(resource_t *res, char **args, int verbose) {
-    uint32_t remote_qp_num;
-    uint16_t remote_lid;
-    uint8_t  remote_gid[16];
+int connect_qp_with_received_info(resource_t *res, struct remote_info *rinfo, int verbose) {
     int rc = 0;
 
-    remote_qp_num = ib_read_int(args[0]);
-    remote_lid    = ib_read_int(args[1]);
-    ib_read_bytes(args[2], 16, remote_gid);
+    res->rinfo = rinfo;
 
     if (verbose > 1) {
         uint8_t *p;
-        fprintf(stderr, "remote_qp_num(%d) remote_lid(%d)\n", remote_qp_num, remote_lid);
-        p = remote_gid;
+        fprintf(stderr, "remote_qp_num(%d) remote_lid(%d)\n", rinfo->qp_num, rinfo->lid);
+        p = rinfo->gid;
         fprintf(stderr, "Remote GID = %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
                p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
     }
@@ -469,7 +469,9 @@ int connect_qp_with_received_info(resource_t *res, char **args, int verbose) {
         return rc;
     }
 
-    rc = modify_qp_to_rtr(res->qp, remote_qp_num, remote_lid, remote_gid, IB_PORT, res->gid_idx);
+    rc = modify_qp_to_rtr(res->qp,
+                          rinfo->qp_num, rinfo->lid, rinfo->gid,
+                          IB_PORT, res->gid_idx);
     if (rc){
         fprintf(stderr, "failed to modify QP state to RTR\n");
         return rc;
@@ -481,146 +483,33 @@ int connect_qp_with_received_info(resource_t *res, char **args, int verbose) {
         return rc;
     }
 
+    res->send_wr->wr.rdma.remote_addr = rinfo->addr;
+    res->send_wr->wr.rdma.rkey        = rinfo->key;
+
     return 0;
 }
 
-static int
-poll_cq(resource_t *res, struct ibv_wc *wc, int cq_flg)
+static struct ibv_wc *dummy_wc = NULL;
+
+int clear_cq(resource_t *res, int cq_flag)
 {
     int   rc = 0;
     struct ibv_cq *target = NULL;
 
-    /* poll the completion for a while before giving up of doing it .. */
-    if(cq_flg == SCQ_FLG && res->scq != NULL) {
+    if (!dummy_wc) {
+	dummy_wc = calloc(MAX_CQ_CAPACITY, sizeof(struct ibv_wc));
+    }
+
+    if(cq_flag == SCQ_FLG && res->scq != NULL) {
         target = res->scq;
-    } else if (cq_flg == RCQ_FLG && res->rcq != NULL){
+    } else if (cq_flag == RCQ_FLG && res->rcq != NULL){
         target = res->rcq;
     }
 
-    rc = ibv_poll_cq(target, 1, wc); /* wc will overwritten */
-    if (rc < 0) return rc;
-
-    return rc;
-}
-
-
-int rdma_read(resource_t *res, const size_t vlen) {
-    struct rdma_pointer *ptr = res->remote_ptr;
-    struct ibv_sge sge;
-    struct ibv_send_wr wr, *bad_wr;
-    struct ibv_wc wc;
-    int rc = 0;
-    int counter = 0;
-
-    memset(&wr, 0, sizeof(wr));
-    memset(&wc, 0, sizeof(struct ibv_wc));
-
-    sge.addr = (intptr_t)res->local_data;
-    sge.length = vlen;
-    sge.lkey = res->local_mr->lkey;
-
-    wr.sg_list = &sge;
-    wr.num_sge = 1;
-    wr.opcode = IBV_WR_RDMA_READ;
-
-    wr.wr.rdma.remote_addr = ptr->addr;
-    wr.wr.rdma.rkey = ptr->key;
-
-    rc = ibv_post_send(res->qp, &wr, &bad_wr);
-    if (rc) {
-        fprintf(stderr, "failed to post wr rc(%d)\n", rc);
-        return rc;
-    }
-
-    while ((rc = poll_cq(res, &wc, SCQ_FLG)) == 0) {
-        counter++;
-        if (counter > 100000) {
-            fprintf(stderr, "takes too much\n");
-            break;
-        }
-    }
-
-    if (wc.status != 0) {
-        fprintf(stderr,
-                "status: %s, vendor syndrome: 0x%d, %d byte, op: 0x%d, id=%ld\n",
-                ibv_wc_status_str(wc.status), wc.vendor_err, wc.byte_len, wc.opcode, wc.wr_id);
-    }
-
+    rc = ibv_poll_cq(target, MAX_CQ_CAPACITY, dummy_wc);
     if (rc < 0) {
-        fprintf(stderr, "poll_cq failed rc(%d)\n", rc);
-        return rc;
+	    fprintf(stderr, "ibv_poll_cq failed");
+	    return rc;
     }
-
-    return 0;
-}
-
-int prepare_mr_host(resource_t *res, uint64_t addr, uint32_t key, size_t len, int verbose) {
-    struct rdma_pointer *ptr = NULL;
-    char * data = NULL;
-    struct ibv_mr *mr = NULL;
-
-    ptr = malloc(sizeof(struct rdma_pointer));
-    if (!ptr) {
-        if (verbose)
-            fprintf(stderr, "Failed to allocate rdma_pointer\n");
-        goto error;
-    }
-
-    ptr->addr = addr;
-    ptr->key  = key;
-    ptr->len  = len;
-
-    data = malloc(ptr->len);
-    if (!data) {
-        if (verbose)
-            fprintf(stderr, "Failed to allocate data memory %u\n", (uint)ptr->len);
-        goto error;
-    }
-    mr = ibv_reg_mr(res->pd, data, ptr->len, IBV_ACCESS_LOCAL_WRITE);
-    if (!mr)
-        goto error;
-
-    if (verbose > 1) {
-        fprintf(stderr, "Remote ptr: addr %lu key %u len %u\n", ptr->addr, ptr->key, (uint)ptr->len);
-        fprintf(stderr, "Local mr: addr %p lkey %u len %u\n", mr->addr, mr->lkey, (uint)mr->length);
-    }
-
-    res->remote_ptr = ptr;
-    res->local_data = data;
-    res->local_mr = mr;
-
-    return 0;
- error:
-    if (ptr)
-        free(ptr);
-    if (data)
-        free(data);
-    if (mr)
-        ibv_dereg_mr(mr);
-    return 1;
-}
-
-int prepare_mr_client(resource_t *res, int length, char *response) {
-    char * data = NULL;
-    struct ibv_mr *mr = NULL;
-
-    data = malloc(length);
-    if (!data)
-        goto error;
-    mr = ibv_reg_mr(res->pd, data, length, IBV_ACCESS_REMOTE_READ);
-    if (!mr)
-        goto error;
-
-    res->local_data = data;
-    res->local_mr = mr;
-
-    sprintf(response, "%s %lu %u %u", response, (intptr_t)mr->addr, mr->rkey, (uint)mr->length);
-
-    return 0;
- error:
-    if (data)
-        free(data);
-    if (mr)
-        ibv_dereg_mr(mr);
-    return 1;
+    return rc < MAX_CQ_CAPACITY ? MAX_CQ_CAPACITY - rc : 0;
 }

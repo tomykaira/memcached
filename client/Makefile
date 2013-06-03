@@ -6,7 +6,7 @@ all: client
 clean:
 	rm *.o client mcb
 
-client: client.o comm.o ../ib.o
+client: client.o comm.o ../ib.o ../ib_client.o
 
 mcb: mcb.o
 	gcc $(CFLGAS) -o $@ $^ -lpthread

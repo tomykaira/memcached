@@ -107,8 +107,6 @@ time_t process_started;     /* when the process was started */
 struct slab_rebalance slab_rebal;
 volatile int slab_rebalance_signal;
 
-resource_t res;
-
 /** file scope variables **/
 static conn *listen_conn = NULL;
 static struct event_base *main_base;
@@ -898,72 +896,6 @@ static void complete_nread_ascii(conn *c) {
 
     item_remove(c->item);       /* release the c->item reference */
     c->item = 0;
-}
-
-/*
- * we get here after reading the value in set/add/replace commands. The command
- * has been stored in c->cmd, and the item is ready in c->item.
- */
-static void complete_nread_drma(conn *c, item *it, int comm) {
-    assert(c != NULL);
-    assert(it != NULL);
-
-    enum store_item_type ret;
-
-    pthread_mutex_lock(&c->thread->stats.mutex);
-    c->thread->stats.slab_stats[it->slabs_clsid].set_cmds++;
-    pthread_mutex_unlock(&c->thread->stats.mutex);
-
-    ret = store_item(it, comm, c);
-
-#ifdef ENABLE_DTRACE
-    uint64_t cas = ITEM_get_cas(it);
-    switch (c->cmd) {
-    case NREAD_ADD:
-        MEMCACHED_COMMAND_ADD(c->sfd, ITEM_key(it), it->nkey,
-                              (ret == 1) ? it->nbytes : -1, cas);
-        break;
-    case NREAD_REPLACE:
-        MEMCACHED_COMMAND_REPLACE(c->sfd, ITEM_key(it), it->nkey,
-                                  (ret == 1) ? it->nbytes : -1, cas);
-        break;
-    case NREAD_APPEND:
-        MEMCACHED_COMMAND_APPEND(c->sfd, ITEM_key(it), it->nkey,
-                                 (ret == 1) ? it->nbytes : -1, cas);
-        break;
-    case NREAD_PREPEND:
-        MEMCACHED_COMMAND_PREPEND(c->sfd, ITEM_key(it), it->nkey,
-                                  (ret == 1) ? it->nbytes : -1, cas);
-        break;
-    case NREAD_SET:
-        MEMCACHED_COMMAND_SET(c->sfd, ITEM_key(it), it->nkey,
-                              (ret == 1) ? it->nbytes : -1, cas);
-        break;
-    case NREAD_CAS:
-        MEMCACHED_COMMAND_CAS(c->sfd, ITEM_key(it), it->nkey, it->nbytes,
-                              cas);
-        break;
-    }
-#endif
-
-    switch (ret) {
-    case STORED:
-        out_string(c, "STORED");
-        break;
-    case EXISTS:
-        out_string(c, "EXISTS");
-        break;
-    case NOT_FOUND:
-        out_string(c, "NOT_FOUND");
-        break;
-    case NOT_STORED:
-        out_string(c, "NOT_STORED");
-        break;
-    default:
-        out_string(c, "SERVER_ERROR Unhandled storage type.");
-    }
-
-    item_remove(it);       /* release the c->item reference */
 }
 
 /**
@@ -3017,113 +2949,6 @@ static void process_update_command(conn *c, token_t *tokens, const size_t ntoken
     conn_set_state(c, conn_nread);
 }
 
-int rdma_read(resource_t *res, const size_t vlen);
-
-static void process_rdma_update_command(conn *c, token_t *tokens, const size_t ntokens, int comm, bool handle_cas) {
-    char *key;
-    size_t nkey;
-    unsigned int flags;
-    int32_t exptime_int = 0;
-    time_t exptime;
-    int vlen;
-    uint64_t req_cas_id=0;
-    item *it;
-
-    assert(c != NULL);
-
-    set_noreply_maybe(c, tokens, ntokens);
-
-    if (tokens[KEY_TOKEN].length > KEY_MAX_LENGTH) {
-        out_string(c, "CLIENT_ERROR bad command line format");
-        return;
-    }
-
-    /* RDMA related validations */
-    if (!res.remote_ptr) {
-        out_string(c, "ERROR rdma pointer is not initialized");
-        return;
-    }
-    if (!res.local_mr) {
-        out_string(c, "SERVER_ERROR server's local_mr is not initialized");
-        return;
-    }
-    if (vlen > res.local_mr->length) {
-        out_string(c, "CLIENT_ERROR object too large for RDMA");
-        return;
-    }
-
-    key = tokens[KEY_TOKEN].value;
-    nkey = tokens[KEY_TOKEN].length;
-
-    if (! (safe_strtoul(tokens[2].value, (uint32_t *)&flags)
-           && safe_strtol(tokens[3].value, &exptime_int)
-           && safe_strtol(tokens[4].value, (int32_t *)&vlen))) {
-        out_string(c, "CLIENT_ERROR bad command line format");
-        return;
-    }
-
-    /* Ubuntu 8.04 breaks when I pass exptime to safe_strtol */
-    exptime = exptime_int;
-
-    /* Negative exptimes can underflow and end up immortal. realtime() will
-       immediately expire values that are greater than REALTIME_MAXDELTA, but less
-       than process_started, so lets aim for that. */
-    if (exptime < 0)
-        exptime = REALTIME_MAXDELTA + 1;
-
-    // does cas value exist?
-    if (handle_cas) {
-        if (!safe_strtoull(tokens[5].value, &req_cas_id)) {
-            out_string(c, "CLIENT_ERROR bad command line format");
-            return;
-        }
-    }
-
-    if (vlen < 0) {
-        out_string(c, "CLIENT_ERROR bad command line format");
-        return;
-    }
-
-    if (settings.detail_enabled) {
-        stats_prefix_record_set(key, nkey);
-    }
-
-    it = item_alloc(key, nkey, flags, realtime(exptime), vlen);
-
-    if (it == 0) {
-        if (! item_size_ok(nkey, flags, vlen))
-            out_string(c, "SERVER_ERROR object too large for cache");
-        else
-            out_string(c, "SERVER_ERROR out of memory storing object");
-        /* swallow the data line */
-        c->write_and_go = conn_swallow;
-        c->sbytes = vlen;
-
-        /* Avoid stale data persisting in cache because we failed alloc.
-         * Unacceptable for SET. Anywhere else too? */
-        if (comm == NREAD_SET) {
-            it = item_get(key, nkey);
-            if (it) {
-                item_unlink(it);
-                item_remove(it);
-            }
-        }
-
-        return;
-    }
-    ITEM_set_cas(it, req_cas_id);
-
-    if (settings.verbose)
-        fprintf(stderr, "<%d key %u, addr %lu, len %d\n", c->sfd, res.remote_ptr->key, res.remote_ptr->addr, (int)vlen);
-
-    if (rdma_read(&res, vlen)) {
-        out_string(c, "SERVER_ERROR failed to copy memory from client");
-        return;
-    }
-    /* TODO: merge these copies */
-    memcpy(ITEM_data(it), res.local_mr->addr, vlen);
-    complete_nread_drma(c, it, comm);
-}
 
 static void process_touch_command(conn *c, token_t *tokens, const size_t ntokens) {
     char *key;
@@ -3376,59 +3201,50 @@ static void process_verbosity_command(conn *c, token_t *tokens, const size_t nto
 
 /* infiniband */
 int stringify_my_info(resource_t *res, int verbose, char *response);
-int connect_qp_with_received_info(resource_t *res, char **args, int verbose);
+int connect_qp_with_received_info(resource_t *res, struct remote_info *rinfo, int verbose);
 int resource_create(resource_t *res, int ib_port, int verbose);
 int resource_destroy(resource_t *res);
-int prepare_mr_host(resource_t *res, uint64_t addr, uint32_t key, size_t len, int verbose);
+void ib_read_bytes(char *str, int length, uint8_t *out);
+void rdma_process_loop(resource_t *res);
 
 static void process_setup_ib_command(conn *c, token_t *tokens, const size_t ntokens) {
     char response[128];
-    char *args[3];
-    int i;
-    uint64_t addr;
-    uint32_t key;
-    uint32_t len;
+    resource_t *res = calloc(1, sizeof(resource_t));
+    struct remote_info* rinfo = calloc(1, sizeof(struct remote_info));
 
-    if (!(safe_strtoull(tokens[4].value, &addr)
-          && safe_strtoul(tokens[5].value, &key)
-          && safe_strtoul(tokens[6].value, &len))) {
+    if (!(safe_strtoul(tokens[1].value, &rinfo->qp_num)
+          && safe_strtoul(tokens[2].value, &rinfo->lid)
+          && safe_strtoull(tokens[4].value, &rinfo->addr)
+          && safe_strtoul(tokens[5].value, &rinfo->key))) {
         out_string(c, "CLIENT_ERROR invalid argument");
         return;
     }
 
-    if (resource_create(&res, IB_PORT, settings.verbose) != 0) {
+    ib_read_bytes(tokens[3].value, strlen(tokens[3].value), rinfo->gid);
+
+    if (resource_create(res, IB_PORT, settings.verbose) != 0) {
         out_string(c, "SERVER_ERROR failed to setup ib resource");
         exit(EXIT_FAILURE);
     }
 
-    for (i = 0; i < 3; i ++) {
-        args[i] = tokens[i + 1].value;
-    }
-
-    if (stringify_my_info(&res, settings.verbose, response) != 0) {
+    if (stringify_my_info(res, settings.verbose, response) != 0) {
         out_string(c, "SERVER_ERROR failed to collect my port info");
         return;
     }
 
-    if (connect_qp_with_received_info(&res, args, settings.verbose) != 0) {
+    if (connect_qp_with_received_info(res, rinfo, settings.verbose) != 0) {
         out_string(c, "SERVER_ERROR failed to connect qp");
         return;
     }
 
-    if (prepare_mr_host(&res, addr, key, (size_t)len, settings.verbose) != 0) {
-        out_string(c, "SERVER_ERROR failed to prepare mr");
-        return;
-    }
-
     out_string(c, response);
+
+    rdma_process_loop(res);
+
+    resource_destroy(res);
 }
 
 static void process_disconnect_ib_command(conn *c) {
-    if (resource_destroy(&res)) {
-        out_string(c, "SERVER_ERROR failed to destroy resource");
-        return;
-    }
-
     out_string(c, "OK");
 }
 
@@ -3624,11 +3440,6 @@ static void process_command(conn *c, char *command) {
 
     } else if (ntokens == 2 && (strcmp(tokens[COMMAND_TOKEN].value, "disconnect_ib") == 0)) {
         process_disconnect_ib_command(c);
-
-    } else if (ntokens == 6 && strcmp(tokens[COMMAND_TOKEN].value, "mset") == 0 && (comm = NREAD_SET)) {
-
-        /* mset <key> <flags> <exptime> <bytes>\r\n */
-        process_rdma_update_command(c, tokens, ntokens, comm, false);
 
     } else {
         out_string(c, "ERROR");
@@ -4872,7 +4683,6 @@ static void remove_pidfile(const char *pid_file) {
 
 static void sig_handler(const int sig) {
     printf("SIGINT handled.\n");
-    resource_destroy(&res);
     exit(EXIT_SUCCESS);
 }
 
