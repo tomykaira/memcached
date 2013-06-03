@@ -437,6 +437,7 @@ int stringify_my_info(resource_t *res, int verbose, char *response) {
         uint8_t *p = (uint8_t*) &my_gid;
         printf("Local GID = %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
                p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
+        fprintf(stderr, "remote_key(%d) remote_addr(%ld)\n", res->in_mr->rkey, (uintptr_t)res->in_mr->addr);
     }
 
     ib_write_bytes((uint8_t *)&my_gid, 16, b64_gid);;
@@ -461,6 +462,7 @@ int connect_qp_with_received_info(resource_t *res, struct remote_info *rinfo, in
         p = rinfo->gid;
         fprintf(stderr, "Remote GID = %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x\n",
                p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
+        fprintf(stderr, "remote_key(%u) remote_addr(%lu)\n", rinfo->key, rinfo->addr);
     }
 
     rc = modify_qp_to_init(res->qp, IB_PORT);
