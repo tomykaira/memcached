@@ -3205,7 +3205,10 @@ int connect_qp_with_received_info(resource_t *res, struct remote_info *rinfo, in
 int resource_create(resource_t *res, int ib_port, int verbose);
 int resource_destroy(resource_t *res);
 void ib_read_bytes(char *str, int length, uint8_t *out);
-void rdma_process_loop(resource_t *res);
+void *rdma_process_loop(void *arg);
+
+resource_t *current_res;
+pthread_t  rdma_th;
 
 static void process_setup_ib_command(conn *c, token_t *tokens, const size_t ntokens) {
     char response[128];
@@ -3237,14 +3240,20 @@ static void process_setup_ib_command(conn *c, token_t *tokens, const size_t ntok
         return;
     }
 
+    current_res = res;
+    pthread_create(&rdma_th, NULL, &rdma_process_loop, res);
+
     out_string(c, response);
-
-    rdma_process_loop(res);
-
-    resource_destroy(res);
 }
 
 static void process_disconnect_ib_command(conn *c) {
+    if (pthread_kill(rdma_th, SIGTERM) != 0) {
+        out_string(c, "Failed to kill thread");
+        return;
+    }
+    resource_destroy(current_res);
+    current_res = NULL;
+
     out_string(c, "OK");
 }
 
@@ -3435,7 +3444,7 @@ static void process_command(conn *c, char *command) {
         }
     } else if ((ntokens == 3 || ntokens == 4) && (strcmp(tokens[COMMAND_TOKEN].value, "verbosity") == 0)) {
         process_verbosity_command(c, tokens, ntokens);
-    } else if (ntokens == 8 && (strcmp(tokens[COMMAND_TOKEN].value, "setup_ib") == 0)) {
+    } else if (ntokens == 7 && (strcmp(tokens[COMMAND_TOKEN].value, "setup_ib") == 0)) {
         process_setup_ib_command(c, tokens, ntokens);
 
     } else if (ntokens == 2 && (strcmp(tokens[COMMAND_TOKEN].value, "disconnect_ib") == 0)) {
