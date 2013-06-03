@@ -104,5 +104,4 @@ void client_stop(resource_t *res)
 {
     encode_binary_stop(res->out_buf);
     rdma_request(res);
-    resource_destroy(res);
 }
