@@ -499,7 +499,7 @@ int clear_cq(resource_t *res, int cq_flag)
     struct ibv_cq *target = NULL;
 
     if (!dummy_wc) {
-	dummy_wc = calloc(MAX_CQ_CAPACITY, sizeof(struct ibv_wc));
+        dummy_wc = calloc(MAX_CQ_CAPACITY, sizeof(struct ibv_wc));
     }
 
     if(cq_flag == SCQ_FLG && res->scq != NULL) {
@@ -510,8 +510,8 @@ int clear_cq(resource_t *res, int cq_flag)
 
     rc = ibv_poll_cq(target, MAX_CQ_CAPACITY, dummy_wc);
     if (rc < 0) {
-	    fprintf(stderr, "ibv_poll_cq failed");
-	    return rc;
+        fprintf(stderr, "ibv_poll_cq failed");
+        return rc;
     }
     return rc < MAX_CQ_CAPACITY ? MAX_CQ_CAPACITY - rc : 0;
 }

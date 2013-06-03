@@ -77,10 +77,7 @@ rdma_request(resource_t *res)
 {
     struct ibv_send_wr *bad_wr = NULL;
     TEST_Z(ibv_post_send(res->qp, res->send_wr, &bad_wr));
-    res->scq_count ++;
-    if (res->scq_count >= MAX_CQ_CAPACITY) {
-        res->scq_count = clear_cq(res, SCQ_FLG);
-    }
+    clear_cq(res, SCQ_FLG);
 }
 
 void client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data)
