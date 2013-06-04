@@ -261,11 +261,16 @@ int main(int argc, char *argv[])
     if (MODE == TEST_MODE) {
         char key[] = "hello";
         char data[] = "Hello world";
+        uint recv_data_len;
+        char *recv_data = NULL;
         printf("Sending\n");
         client_set(&res, key, strlen(key), strlen(data), data);
         printf("Getting\n");
-        send_command(sfd, "get hello");
+        client_get(&res, key, strlen(key), &recv_data_len, &recv_data);
+        recv_data[recv_data_len] = '\0';
+        printf("Response: %s(%d)\n", recv_data, recv_data_len);
         client_stop(&res);
+        free(recv_data);
     } else {
         for (int size = 1000; size <= 16000; size += 1000) {
             bench_set(&res, sfd, size, 10000);
