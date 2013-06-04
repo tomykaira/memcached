@@ -108,6 +108,7 @@ static void do_op_get(uint8_t *request, uint8_t *response)
         encode_get_response(0, NULL, response);
     } else {
         encode_get_response(it->nbytes, ITEM_data(it), response);
+        item_remove(it);
     }
 }
 
