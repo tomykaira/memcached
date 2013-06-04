@@ -182,6 +182,13 @@ static int bench_set(resource_t *res, int sfd, int size, int times)
         if (read_safe(sfd, &recv) < 0) {
             return -1;
         }
+        sprintf(command, "get k%02d\r\n", i % 100);
+        if (write_safe(sfd, command, strlen(command)) == -1) {
+            return -1;
+        }
+        if (read_safe(sfd, &recv) < 0) {
+            return -1;
+        }
         free(recv);
     }
     gettimeofday(&end, NULL);
@@ -200,10 +207,12 @@ static int bench_set(resource_t *res, int sfd, int size, int times)
 static int bench_rdma_set(resource_t *res, int sfd, int size, int times)
 {
     int i;
+    char *recv_data = NULL;
     char *data = calloc(size, sizeof(char));
     struct timeval begin, end;
     double elapsed;
     char key[128] = "k00";
+    uint recv_data_len;
 
     sprintf(data, "abcabcabc");
     data[size - 1] = data[size - 2] = data[size - 3] = 'A';
@@ -214,6 +223,7 @@ static int bench_rdma_set(resource_t *res, int sfd, int size, int times)
         key[2] = i / 10 + '0';
         if (client_set(res, key, 3, size, data) != 0)
             return 1;
+        client_get(res, key, 3, &recv_data_len, &recv_data);
     }
     gettimeofday(&end, NULL);
     elapsed = get_interval(begin, end);
