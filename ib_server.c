@@ -67,13 +67,13 @@ static int do_op_set(uint8_t *request)
 
     /* key is memcpyed in do_item_alloc */
     it = item_alloc(key, nkey, 0, 0, vlen);
-    old_it = do_item_get(key, it->nkey, hv);
+    old_it = do_item_get(key, nkey, hv);
 
     if (it == 0) {
         if (! item_size_ok(nkey, 0, vlen))
-            fprintf(stderr, "SERVER_ERROR object too large for cache");
+            fprintf(stderr, "SERVER_ERROR object too large for cache\n");
         else
-            fprintf(stderr, "SERVER_ERROR out of memory storing object");
+            fprintf(stderr, "SERVER_ERROR out of memory storing object\n");
 
         /* Avoid stale data persisting in cache because we failed alloc.
          * Unacceptable for SET. Anywhere else too? */

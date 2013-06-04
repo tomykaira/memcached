@@ -17,7 +17,7 @@
 
 #define TEST_MODE 0
 #define BENCH_MODE 1
-#define MODE TEST_MODE
+#define MODE BENCH_MODE
 #define MAX_LENGTH 16000
 
 /* comm.c */
@@ -172,7 +172,7 @@ static int bench_set(resource_t *res, int sfd, int size, int times)
 
     gettimeofday(&begin, NULL);
     for (i = 1; i <= times; ++i) {
-        sprintf(command, "set %d 0 0 %u\r\n", i, (uint)size);
+        sprintf(command, "set k%02d 0 0 %u\r\n", i % 100, (uint)size);
         header_length = strlen(command);
         memcpy(command + header_length, data, size);
         sprintf(command + header_length + size, "\r\n");
@@ -201,25 +201,18 @@ static int bench_rdma_set(resource_t *res, int sfd, int size, int times)
 {
     int i;
     char *data = calloc(size, sizeof(char));
-    char *recv;
     struct timeval begin, end;
     double elapsed;
-    char command[1024];
+    char key[128] = "k00";
 
     sprintf(data, "abcabcabc");
     data[size - 1] = data[size - 2] = data[size - 3] = 'A';
 
     gettimeofday(&begin, NULL);
     for (i = 1; i <= times; ++i) {
-        // memcpy(res->local_data, data, size);
-        sprintf(command, "mset %d 0 0 %u\r\n", i, (uint)size);
-        if (write_safe(sfd, command, strlen(command)) == -1) {
-            return -1;
-        }
-        if (read_safe(sfd, &recv) < 0) {
-            return -1;
-        }
-        free(recv);
+        key[1] = i % 10 + '0';
+        key[2] = i / 10 + '0';
+        client_set(res, key, 3, size, data);
     }
     gettimeofday(&end, NULL);
     elapsed = get_interval(begin, end);
@@ -250,6 +243,7 @@ int main(int argc, char *argv[])
         rc = EXIT_FAILURE;
         goto end;
     }
+    res.in_buf[0] = 0xff;
 
     if (connect_qp_client(&res, sfd) != 0) {
         fprintf(stderr, "Failed to connect qp\n");
