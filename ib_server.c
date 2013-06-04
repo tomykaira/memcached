@@ -90,8 +90,9 @@ static int do_op_set(uint8_t *request)
         item_replace(old_it, it, hv);
         do_item_remove(old_it);         /* release our reference */
     } else {
-        item_link(it);
+        do_item_link(it, hv);
     }
+    item_remove(it);
     return 0;
 }
 
@@ -102,7 +103,6 @@ static void do_op_get(uint8_t *request, uint8_t *response)
     item *it;
 
     decode_binary_get(request, &key, &nkey);
-    /* key is memcpyed in do_item_alloc */
     it = item_get(key, nkey);
     if (it == 0) {
         encode_get_response(0, NULL, response);

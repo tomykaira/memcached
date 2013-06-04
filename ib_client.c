@@ -11,7 +11,7 @@
 int clear_cq(resource_t *res, int cq_flag);
 int resource_destroy(resource_t *res);
 
-void client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data);
+int client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data);
 void client_get(resource_t *res, char *key, uint key_len, uint *data_len, char **data);
 void client_stop(resource_t *res);
 
@@ -79,7 +79,7 @@ rdma_request(resource_t *res)
     clear_cq(res, SCQ_FLG);
 }
 
-void client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data)
+int client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data)
 {
     int return_code;
     encode_binary_set(key, key_len, data_len, data, res->out_buf);
@@ -89,6 +89,7 @@ void client_set(resource_t *res, char *key, uint key_len, uint data_len, char *d
     res->in_buf[0] = 0xff;
     if (return_code != 0)
       fprintf(stderr, "ERROR in client_set\n");
+    return return_code;
 }
 
 /*

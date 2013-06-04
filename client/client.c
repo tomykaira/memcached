@@ -32,7 +32,7 @@ int resource_destroy(resource_t *res);
 void ib_read_bytes(char *str, int length, uint8_t *out);
 
 /* ib_client.c */
-void client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data);
+int client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data);
 void client_get(resource_t *res, char *key, uint key_len, uint *data_len, char **data);
 void client_stop(resource_t *res);
 
@@ -212,7 +212,8 @@ static int bench_rdma_set(resource_t *res, int sfd, int size, int times)
     for (i = 1; i <= times; ++i) {
         key[1] = i % 10 + '0';
         key[2] = i / 10 + '0';
-        client_set(res, key, 3, size, data);
+        if (client_set(res, key, 3, size, data) != 0)
+            return 1;
     }
     gettimeofday(&end, NULL);
     elapsed = get_interval(begin, end);
