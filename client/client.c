@@ -219,11 +219,7 @@ static int bench_tcp(resource_t *res, int sfd, int size, int times)
     }
     gettimeofday(&end, NULL);
     elapsed = get_interval(begin, end);
-    printf("ORIGINAL =>\n");
-    printf("\tsize\t%d\n", size);
-    printf("\ttimes\t%d\n", times);
-    printf("\tinterval\t%lf [sec]\n", elapsed);
-    printf("\tperformance\t%lf [req/sec]\n\n", (double)times/elapsed);
+    printf("tcp, %d, %d, %lf, %lf\n", size, times, elapsed, (double)times/elapsed);
 
     free(data);
     free(command);
@@ -266,11 +262,7 @@ static int bench_rdma(resource_t *res, int sfd, int size, int times)
     }
     gettimeofday(&end, NULL);
     elapsed = get_interval(begin, end);
-    printf("RDMA =>\n");
-    printf("\tsize\t%d\n", size);
-    printf("\ttimes\t%d\n", times);
-    printf("\tinterval\t%lf [sec]\n", elapsed);
-    printf("\tperformance\t%lf [req/sec]\n\n", (double)times/elapsed);
+    printf("rdma, %d, %d, %lf, %lf\n", size, times, elapsed, (double)times/elapsed);
 
     free(data);
     return 0;
