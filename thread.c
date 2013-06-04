@@ -844,7 +844,7 @@ void thread_init(int nthreads, struct event_base *main_base) {
 }
 
 /* ib */
-void rdma_process_loop(resource_t *res);
+void rdma_process_loop(resource_t *res, int verbose);
 void *rdma_process_thread(void *arg);
 
 void *rdma_process_thread(void *arg)
@@ -853,6 +853,6 @@ void *rdma_process_thread(void *arg)
     int item_lock_type = ITEM_LOCK_GRANULAR;
     pthread_detach(pthread_self());
     pthread_setspecific(item_lock_type_key, &item_lock_type);
-    rdma_process_loop(res);
+    rdma_process_loop(res, settings.verbose);
     return NULL;
 }

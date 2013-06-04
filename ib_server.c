@@ -14,7 +14,7 @@
 int resource_destroy(resource_t *res);
 int clear_cq(resource_t *res, int cq_flag);
 
-void rdma_process_loop(resource_t *res);
+void rdma_process_loop(resource_t *res, int verbose);
 
 static void
 decode_binary_set(uint8_t *in, char **key, uint *key_len, uint *data_len, char **data)
@@ -111,35 +111,39 @@ rdma_response(resource_t *res)
     }
 }
 
-void rdma_process_loop(resource_t *res)
+void rdma_process_loop(resource_t *res, int verbose)
 {
     int opcode = 0;
     int stop = 0;
 
-    fprintf(stderr, "Starting thread\n");
-
+    if (verbose > 1)
+        fprintf(stderr, "Starting thread\n");
     while (!stop) {
         POLL_UNTIL(res->in_buf[0] != 0);
         opcode = res->in_buf[0];
         res->in_buf[0] = 0;
         switch (opcode) {
         case OP_SET:
-            fprintf(stderr, "SET\n");
+            if (verbose > 1)
+                fprintf(stderr, "SET\n");
             do_op_set(res->in_buf);
             res->out_buf[0] = 0;
             rdma_response(res);
             break;
         case OP_GET:
-            fprintf(stderr, "GET\n");
+            if (verbose > 1)
+                fprintf(stderr, "GET\n");
             do_op_get(res->in_buf, res->out_buf);
             rdma_response(res);
             break;
         case OP_STOP:
-            fprintf(stderr, "STOP\n");
+            if (verbose > 1)
+                fprintf(stderr, "STOP\n");
             stop = 1;
             break;
         }
     }
-    fprintf(stderr, "stopping thread\n");
+    if (verbose > 1)
+        fprintf(stderr, "stopping thread\n");
     resource_destroy(res);
 }
