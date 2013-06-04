@@ -22,11 +22,12 @@
 #define GET_ONLY 0x100
 #define SET_ONLY 0x101
 #define BOTH     0x102
-#define BENCH_TYPE SET_ONLY
+#define BENCH_TYPE GET_ONLY
 
 /* comm.c */
 int write_safe(int fd, char *data, int len);
 int read_safe(int fd, char **data);
+int read_at_least(int fd, char **data, int size);
 
 /* ib.c */
 int stringify_my_info(resource_t *res, int verbose, char *response);
@@ -170,6 +171,7 @@ static int bench_tcp(resource_t *res, int sfd, int size, int times)
     double elapsed;
     char *command = calloc(size + 1024, sizeof(char));
     int header_length;
+    int receive_len;
 
     sprintf(data, "abcabcabc");
     data[size - 1] = data[size - 2] = data[size - 3] = 'A';
@@ -211,7 +213,11 @@ static int bench_tcp(resource_t *res, int sfd, int size, int times)
             if (write_safe(sfd, command, strlen(command)) == -1) {
                 return -1;
             }
-            if (read_safe(sfd, &recv) < 0) {
+            if ((receive_len = read_at_least(sfd, &recv, size)) < 0) {
+                return -1;
+            }
+            if (receive_len < size) {
+                fprintf(stderr, "Short response: expected (%d) received (%d)\n", size, receive_len);
                 return -1;
             }
             free(recv);
@@ -312,6 +318,7 @@ int main(int argc, char *argv[])
             bench_tcp(&res, sfd, size, 10000);
             bench_rdma(&res, sfd, size, 10000);
         }
+        client_stop(&res);
     }
 
     send_command(sfd, "shutdown");

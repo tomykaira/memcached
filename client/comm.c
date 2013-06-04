@@ -8,6 +8,7 @@
 
 int write_safe(int fd, char *data, int len);
 int read_safe(int fd, char **data);
+int read_at_least(int fd, char **data, int size);
 
 int write_safe(int fd, char *data, int len)
 {
@@ -50,9 +51,36 @@ int read_safe(int fd, char **data)
         buf = realloc(buf, current_size*2);
         current_size *= 2;
       }
+      continue;
     }
 
     break;
+  }
+
+  *data = buf;
+  return received_len;
+}
+
+int read_at_least(int fd, char **data, int size)
+{
+  int received_len = 0, current_size = size + 128;
+  char *buf = malloc(current_size);
+
+  while (1) {
+    int max = current_size - received_len;
+    assert(max > 0);
+    int ret = read(fd, buf + received_len, max);
+
+    if (ret == -1) {
+      if (errno == EINTR)
+        continue;
+      perror("read_safe");
+      return -1;
+    }
+
+    received_len += ret;
+    if (received_len >= size)
+      break;
   }
 
   *data = buf;
