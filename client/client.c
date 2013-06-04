@@ -157,7 +157,7 @@ static double get_interval(struct timeval bt, struct timeval et)
     return e - b;
 }
 
-static int bench_set(resource_t *res, int sfd, int size, int times)
+static int bench_tcp(resource_t *res, int sfd, int size, int times)
 {
     int i;
     char *data = calloc(size, sizeof(char));
@@ -204,7 +204,7 @@ static int bench_set(resource_t *res, int sfd, int size, int times)
     return 0;
 }
 
-static int bench_rdma_set(resource_t *res, int sfd, int size, int times)
+static int bench_rdma(resource_t *res, int sfd, int size, int times)
 {
     int i;
     char *recv_data = NULL;
@@ -278,8 +278,8 @@ int main(int argc, char *argv[])
         free(recv_data);
     } else {
         for (int size = 1000; size <= 16000; size += 1000) {
-            bench_set(&res, sfd, size, 10000);
-            bench_rdma_set(&res, sfd, size, 10000);
+            bench_tcp(&res, sfd, size, 10000);
+            bench_rdma(&res, sfd, size, 10000);
         }
     }
 
