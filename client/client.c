@@ -19,6 +19,10 @@
 #define BENCH_MODE 1
 #define MODE BENCH_MODE
 #define MAX_LENGTH 16000
+#define GET_ONLY 0x100
+#define SET_ONLY 0x101
+#define BOTH     0x102
+#define BENCH_TYPE SET_ONLY
 
 /* comm.c */
 int write_safe(int fd, char *data, int len);
@@ -170,26 +174,48 @@ static int bench_tcp(resource_t *res, int sfd, int size, int times)
     sprintf(data, "abcabcabc");
     data[size - 1] = data[size - 2] = data[size - 3] = 'A';
 
+    /* preset data */
+    if (BENCH_TYPE == GET_ONLY) {
+        for (int i = 0; i < 100; ++i) {
+            sprintf(command, "set k%02d 0 0 %u\r\n", i % 100, (uint)size);
+            header_length = strlen(command);
+            memcpy(command + header_length, data, size);
+            sprintf(command + header_length + size, "\r\n");
+            if (write_safe(sfd, command, header_length + size + 2) == -1) {
+                return -1;
+            }
+            if (read_safe(sfd, &recv) < 0) {
+                return -1;
+            }
+            free(recv);
+        }
+    }
+
     gettimeofday(&begin, NULL);
     for (i = 1; i <= times; ++i) {
-        sprintf(command, "set k%02d 0 0 %u\r\n", i % 100, (uint)size);
-        header_length = strlen(command);
-        memcpy(command + header_length, data, size);
-        sprintf(command + header_length + size, "\r\n");
-        if (write_safe(sfd, command, header_length + size + 2) == -1) {
-            return -1;
+        if (BENCH_TYPE == SET_ONLY || BENCH_TYPE == BOTH) {
+            sprintf(command, "set k%02d 0 0 %u\r\n", i % 100, (uint)size);
+            header_length = strlen(command);
+            memcpy(command + header_length, data, size);
+            sprintf(command + header_length + size, "\r\n");
+            if (write_safe(sfd, command, header_length + size + 2) == -1) {
+                return -1;
+            }
+            if (read_safe(sfd, &recv) < 0) {
+                return -1;
+            }
+            free(recv);
         }
-        if (read_safe(sfd, &recv) < 0) {
-            return -1;
+        if (BENCH_TYPE == GET_ONLY || BENCH_TYPE == BOTH) {
+            sprintf(command, "get k%02d\r\n", i % 100);
+            if (write_safe(sfd, command, strlen(command)) == -1) {
+                return -1;
+            }
+            if (read_safe(sfd, &recv) < 0) {
+                return -1;
+            }
+            free(recv);
         }
-        sprintf(command, "get k%02d\r\n", i % 100);
-        if (write_safe(sfd, command, strlen(command)) == -1) {
-            return -1;
-        }
-        if (read_safe(sfd, &recv) < 0) {
-            return -1;
-        }
-        free(recv);
     }
     gettimeofday(&end, NULL);
     elapsed = get_interval(begin, end);
@@ -217,13 +243,26 @@ static int bench_rdma(resource_t *res, int sfd, int size, int times)
     sprintf(data, "abcabcabc");
     data[size - 1] = data[size - 2] = data[size - 3] = 'A';
 
+    if (BENCH_TYPE == GET_ONLY) {
+        for (int i = 0; i < 100; ++i) {
+            key[1] = i % 10 + '0';
+            key[2] = i / 10 + '0';
+            if (client_set(res, key, 3, size, data) != 0)
+                return 1;
+        }
+    }
+
     gettimeofday(&begin, NULL);
     for (i = 1; i <= times; ++i) {
         key[1] = i % 10 + '0';
         key[2] = i / 10 + '0';
-        if (client_set(res, key, 3, size, data) != 0)
-            return 1;
-        client_get(res, key, 3, &recv_data_len, &recv_data);
+        if (BENCH_TYPE == SET_ONLY || BENCH_TYPE == BOTH) {
+            if (client_set(res, key, 3, size, data) != 0)
+                return 1;
+        }
+        if (BENCH_TYPE == GET_ONLY || BENCH_TYPE == BOTH) {
+            client_get(res, key, 3, &recv_data_len, &recv_data);
+        }
     }
     gettimeofday(&end, NULL);
     elapsed = get_interval(begin, end);
