@@ -55,15 +55,20 @@ encode_get_response(uint data_len, char *data, uint8_t *out)
     }
 }
 
-static void do_op_set(uint8_t *request)
+static int do_op_set(uint8_t *request)
 {
     char *key, *data;
     uint nkey, vlen;
-    item *it;
+    item *it, *old_it;
+    uint32_t hv;
 
     decode_binary_set(request, &key, &nkey, &vlen, &data);
+    hv = hash(key, nkey, 0);
+
     /* key is memcpyed in do_item_alloc */
     it = item_alloc(key, nkey, 0, 0, vlen);
+    old_it = do_item_get(key, it->nkey, hv);
+
     if (it == 0) {
         if (! item_size_ok(nkey, 0, vlen))
             fprintf(stderr, "SERVER_ERROR object too large for cache");
@@ -78,10 +83,16 @@ static void do_op_set(uint8_t *request)
             item_remove(it);
         }
 
-        return;
+        return 1;
     }
     memcpy(ITEM_data(it), data, vlen);
-    item_link(it);
+    if (old_it != NULL) {
+        item_replace(old_it, it, hv);
+        do_item_remove(old_it);         /* release our reference */
+    } else {
+        item_link(it);
+    }
+    return 0;
 }
 
 static void do_op_get(uint8_t *request, uint8_t *response)
@@ -126,8 +137,7 @@ void rdma_process_loop(resource_t *res, int verbose)
         case OP_SET:
             if (verbose > 1)
                 fprintf(stderr, "SET\n");
-            do_op_set(res->in_buf);
-            res->out_buf[0] = 0;
+            res->out_buf[0] = do_op_set(res->in_buf);
             rdma_response(res);
             break;
         case OP_GET:

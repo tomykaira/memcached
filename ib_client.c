@@ -81,11 +81,15 @@ rdma_request(resource_t *res)
 
 void client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data)
 {
+    int return_code;
     res->in_buf[0] = 0xff;
     encode_binary_set(key, key_len, data_len, data, res->out_buf);
     rdma_request(res);
     POLL_UNTIL(res->in_buf[0] != 0xff);
+    return_code = res->in_buf[0];
     res->in_buf[0] = 0xff;
+    if (return_code != 0)
+      fprintf(stderr, "ERROR in client_set\n");
 }
 
 /*
