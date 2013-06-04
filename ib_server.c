@@ -82,6 +82,7 @@ static void do_op_set(uint8_t *request)
         return;
     }
     memcpy(ITEM_data(it), data, vlen);
+    item_link(it);
 }
 
 static void do_op_get(uint8_t *request, uint8_t *response)
