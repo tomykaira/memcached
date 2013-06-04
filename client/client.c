@@ -278,9 +278,6 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* let server to discard resource  */
-    send_command(sfd, "disconnect_ib");
-
     send_command(sfd, "shutdown");
 
  end:

@@ -851,6 +851,7 @@ void *rdma_process_thread(void *arg)
 {
     resource_t *res = (resource_t *)arg;
     int item_lock_type = ITEM_LOCK_GRANULAR;
+    pthread_detach(pthread_self());
     pthread_setspecific(item_lock_type_key, &item_lock_type);
     rdma_process_loop(res);
     return NULL;

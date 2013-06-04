@@ -3203,17 +3203,14 @@ static void process_verbosity_command(conn *c, token_t *tokens, const size_t nto
 int stringify_my_info(resource_t *res, int verbose, char *response);
 int connect_qp_with_received_info(resource_t *res, struct remote_info *rinfo, int verbose);
 int resource_create(resource_t *res, int ib_port, int verbose);
-int resource_destroy(resource_t *res);
 void ib_read_bytes(char *str, int length, uint8_t *out);
 void *rdma_process_thread(void *arg);
-
-resource_t *current_res;
-pthread_t  rdma_th;
 
 static void process_setup_ib_command(conn *c, token_t *tokens, const size_t ntokens) {
     char response[128];
     resource_t *res = calloc(1, sizeof(resource_t));
     struct remote_info* rinfo = calloc(1, sizeof(struct remote_info));
+    pthread_t  rdma_th;
 
     if (!(safe_strtoul(tokens[1].value, &rinfo->qp_num)
           && safe_strtoul(tokens[2].value, &rinfo->lid)
@@ -3240,21 +3237,9 @@ static void process_setup_ib_command(conn *c, token_t *tokens, const size_t ntok
         return;
     }
 
-    current_res = res;
     pthread_create(&rdma_th, NULL, &rdma_process_thread, res);
 
     out_string(c, response);
-}
-
-static void process_disconnect_ib_command(conn *c) {
-    if (pthread_kill(rdma_th, SIGTERM) != 0) {
-        out_string(c, "Failed to kill thread");
-        return;
-    }
-    resource_destroy(current_res);
-    current_res = NULL;
-
-    out_string(c, "OK");
 }
 
 static void process_slabs_automove_command(conn *c, token_t *tokens, const size_t ntokens) {
@@ -3446,9 +3431,6 @@ static void process_command(conn *c, char *command) {
         process_verbosity_command(c, tokens, ntokens);
     } else if (ntokens == 7 && (strcmp(tokens[COMMAND_TOKEN].value, "setup_ib") == 0)) {
         process_setup_ib_command(c, tokens, ntokens);
-
-    } else if (ntokens == 2 && (strcmp(tokens[COMMAND_TOKEN].value, "disconnect_ib") == 0)) {
-        process_disconnect_ib_command(c);
 
     } else {
         out_string(c, "ERROR");

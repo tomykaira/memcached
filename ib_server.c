@@ -11,7 +11,6 @@
 #include "ib.h"
 
 /* ib.c */
-int resource_create(resource_t *res, int ib_port, int verbose);
 int resource_destroy(resource_t *res);
 int clear_cq(resource_t *res, int cq_flag);
 
@@ -142,4 +141,5 @@ void rdma_process_loop(resource_t *res)
         }
     }
     fprintf(stderr, "stopping thread\n");
+    resource_destroy(res);
 }
