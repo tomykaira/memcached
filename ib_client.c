@@ -12,7 +12,7 @@ int clear_cq(resource_t *res, int cq_flag);
 int resource_destroy(resource_t *res);
 
 int client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data);
-void client_get(resource_t *res, char *key, uint key_len, uint *data_len, char **data);
+void client_get(resource_t *res, char *key, uint key_len, uint *data_len, uint8_t **data);
 void client_stop(resource_t *res);
 
 /*
@@ -51,7 +51,7 @@ encode_binary_stop(uint8_t *out)
 }
 
 static void
-decode_get_response(uint8_t *in, uint *data_len, char **data)
+decode_get_response(uint8_t *in, uint *data_len, uint8_t **data)
 {
     int last = 0;
     POLL_UNTIL(in[0] != 0xff);
@@ -62,13 +62,8 @@ decode_get_response(uint8_t *in, uint *data_len, char **data)
         return;
     }
     last = 5 + *data_len - 1;
-    if (*data) {
-        *data = realloc(*data, *data_len);
-    } else {
-        *data = malloc(*data_len);
-    }
     POLL_UNTIL(in[last] == in[4]);
-    memcpy(*data, in + 5, *data_len);
+    *data = in + 5;
 }
 
 static void
@@ -76,7 +71,10 @@ rdma_request(resource_t *res)
 {
     struct ibv_send_wr *bad_wr = NULL;
     TEST_Z(ibv_post_send(res->qp, res->send_wr, &bad_wr));
-    clear_cq(res, SCQ_FLG);
+    res->scq_count ++;
+    if (res->scq_count >= MAX_CQ_CAPACITY) {
+        res->scq_count = clear_cq(res, SCQ_FLG);
+    }
 }
 
 int client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data)
@@ -96,7 +94,7 @@ int client_set(resource_t *res, char *key, uint key_len, uint data_len, char *da
   output: data_len, data
   'data' should be NULL or malloced buffer, and be freed after use
  */
-void client_get(resource_t *res, char *key, uint key_len, uint *data_len, char **data)
+void client_get(resource_t *res, char *key, uint key_len, uint *data_len, uint8_t **data)
 {
     encode_binary_get(key, key_len, res->out_buf);
     rdma_request(res);

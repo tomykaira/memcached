@@ -33,7 +33,7 @@ void ib_read_bytes(char *str, int length, uint8_t *out);
 
 /* ib_client.c */
 int client_set(resource_t *res, char *key, uint key_len, uint data_len, char *data);
-void client_get(resource_t *res, char *key, uint key_len, uint *data_len, char **data);
+void client_get(resource_t *res, char *key, uint key_len, uint *data_len, uint8_t **data);
 void client_stop(resource_t *res);
 
 resource_t res;
@@ -207,7 +207,7 @@ static int bench_tcp(resource_t *res, int sfd, int size, int times)
 static int bench_rdma(resource_t *res, int sfd, int size, int times)
 {
     int i;
-    char *recv_data = NULL;
+    uint8_t *recv_data = NULL;
     char *data = calloc(size, sizeof(char));
     struct timeval begin, end;
     double elapsed;
@@ -267,7 +267,7 @@ int main(int argc, char *argv[])
         char key[] = "hello";
         char data[] = "Hello world";
         uint recv_data_len;
-        char *recv_data = NULL;
+        uint8_t *recv_data = NULL;
         printf("Sending\n");
         client_set(&res, key, strlen(key), strlen(data), data);
         printf("Getting\n");
