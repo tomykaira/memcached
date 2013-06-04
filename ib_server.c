@@ -49,10 +49,10 @@ encode_get_response(uint data_len, char *data, uint8_t *out)
     out[2] = (data_len >>  8) & 0xff;
     out[3] = data_len & 0xff;
     if (data == NULL) {
+        out[4] = 0;
+    } else {
         out[4] = data[data_len-1];
         memcpy(out + 5, data, data_len);
-    } else {
-        out[4] = 0;
     }
 }
 

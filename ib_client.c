@@ -54,7 +54,6 @@ static void
 decode_get_response(uint8_t *in, uint *data_len, char **data)
 {
     int last = 0;
-    uint8_t last_byte = in[4];
     POLL_UNTIL(in[0] != 0xff);
     *data_len = (in[0] << 24) | (in[1] << 16) | (in[2] << 8) | in[3];
     in[0] = 0xff;
@@ -68,7 +67,7 @@ decode_get_response(uint8_t *in, uint *data_len, char **data)
     } else {
         *data = malloc(*data_len);
     }
-    POLL_UNTIL(in[last] == last_byte);
+    POLL_UNTIL(in[last] == in[4]);
     memcpy(*data, in + 5, *data_len);
 }
 
