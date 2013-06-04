@@ -3,6 +3,7 @@
  * Thread management for memcached.
  */
 #include "memcached.h"
+#include "ib.h"
 #include <assert.h>
 #include <stdio.h>
 #include <errno.h>
@@ -842,3 +843,15 @@ void thread_init(int nthreads, struct event_base *main_base) {
     pthread_mutex_unlock(&init_lock);
 }
 
+/* ib */
+void rdma_process_loop(resource_t *res);
+void *rdma_process_thread(void *arg);
+
+void *rdma_process_thread(void *arg)
+{
+    resource_t *res = (resource_t *)arg;
+    int item_lock_type = ITEM_LOCK_GRANULAR;
+    pthread_setspecific(item_lock_type_key, &item_lock_type);
+    rdma_process_loop(res);
+    return NULL;
+}

@@ -3205,7 +3205,7 @@ int connect_qp_with_received_info(resource_t *res, struct remote_info *rinfo, in
 int resource_create(resource_t *res, int ib_port, int verbose);
 int resource_destroy(resource_t *res);
 void ib_read_bytes(char *str, int length, uint8_t *out);
-void *rdma_process_loop(void *arg);
+void *rdma_process_thread(void *arg);
 
 resource_t *current_res;
 pthread_t  rdma_th;
@@ -3241,7 +3241,7 @@ static void process_setup_ib_command(conn *c, token_t *tokens, const size_t ntok
     }
 
     current_res = res;
-    pthread_create(&rdma_th, NULL, &rdma_process_loop, res);
+    pthread_create(&rdma_th, NULL, &rdma_process_thread, res);
 
     out_string(c, response);
 }
